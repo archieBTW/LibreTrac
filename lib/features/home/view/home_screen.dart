@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:libretrac/constants/disclaimer.dart';
 import 'package:libretrac/features/ai/view/trend_analysis_dialog.dart';
 import 'package:libretrac/features/cognitive/view/cognitive_chart.dart';
 import 'package:libretrac/features/cognitive/view/digit_span_test.dart';
 import 'package:libretrac/features/cognitive/view/go_no_go_test.dart';
-import 'package:libretrac/features/cognitive/view/n_back_test.dart';
 import 'package:libretrac/features/cognitive/view/reaction_test_screen.dart';
 import 'package:libretrac/features/cognitive/view/stroop_test_screen.dart';
 import 'package:libretrac/features/cognitive/view/symbol_search_test.dart';
@@ -62,6 +62,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Show first-launch disclaimer if not yet acknowledged
+      final disclaimerShown = await DisclaimerPrefs.hasAcknowledged();
+      if (!disclaimerShown) {
+        await _showFirstLaunchDisclaimer();
+      }
+      
       final done = await OnboardingPrefs.isComplete();
       if (!done) {
         _startTutorial();
@@ -69,6 +75,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _maybePromptSleep();
       }
     });
+  }
+
+  Future<void> _showFirstLaunchDisclaimer() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text(kFirstLaunchDisclaimerTitle),
+        content: SingleChildScrollView(
+          child: Text(
+            kFirstLaunchDisclaimer,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () async {
+              await DisclaimerPrefs.markAcknowledged();
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            child: const Text('I Understand'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _startTutorial() {
@@ -252,7 +283,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             children: [
               _sheetItem('Reaction Time', const ReactionTestScreen()),
               _sheetItem('Stroop Test', const StroopTestScreen()),
-              _sheetItem('N-Back Test', const NBackTestScreen()),
               _sheetItem('Go / No-Go', const GoNoGoTestScreen()),
               _sheetItem('Digit Span', const DigitSpanTestScreen()),
               _sheetItem('Symbol Search', const SymbolSearchScreen()),
@@ -666,6 +696,25 @@ class OnboardingPrefs {
   }
 
   static Future<void> markComplete() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, true);
+  }
+
+  static Future<void> reset() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_key);
+  }
+}
+
+class DisclaimerPrefs {
+  static const _key = 'disclaimer_acknowledged';
+
+  static Future<bool> hasAcknowledged() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_key) ?? false;
+  }
+
+  static Future<void> markAcknowledged() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, true);
   }

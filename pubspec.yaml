@@ -45,13 +45,12 @@ dependencies:
   build_runner: ^2.5.3
   flutter_lints: ^5.0.0
   http: ^1.4.0
-  dart_openai: ^5.1.0
+  google_generative_ai: ^0.4.6
   shared_preferences: ^2.5.3
   file_picker: ^10.2.0
   share_plus: ^11.0.0
   flutter_markdown: ^0.7.7+1
   home_widget: ^0.8.0
-  flutter_dotenv: ^5.2.1
   timezone: ^0.10.1
   flutter_local_notifications: ^19.3.0
   flutter_colorpicker: ^1.1.0
@@ -59,6 +58,7 @@ dependencies:
   image_picker: ^1.1.2
   archive: ^4.0.7
   showcaseview: ^4.0.1
+  url_launcher: ^6.2.5
 
 dev_dependencies:
   flutter_launcher_icons: ^0.13.1   # or latest
@@ -86,7 +86,6 @@ flutter_icons:
 flutter:
   assets:
     - assets/icons/
-    - assets/.env
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

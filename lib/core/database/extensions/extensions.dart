@@ -44,17 +44,6 @@ extension StroopResultExport on StroopResult {
   };
 }
 
-// NBackResult
-extension NBackResultExport on NBackResult {
-  Map<String, dynamic> toExportJson() => {
-    'date': formatDate(timestamp),
-    'n': n,
-    'trials': trials,
-    'correct': correct,
-    'percentCorrect': percentCorrect,
-  };
-}
-
 // GoNoGoResult
 extension GoNoGoResultExport on GoNoGoResult {
   Map<String, dynamic> toExportJson() => {

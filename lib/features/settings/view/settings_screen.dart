@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/providers/db_provider.dart';
 import 'package:libretrac/providers/theme_provider.dart';
+import 'package:libretrac/services/prefs_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -47,7 +48,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             b
               ..deleteAll(db.reactionResults)
               ..deleteAll(db.stroopResults)
-              ..deleteAll(db.nBackResults)
               ..deleteAll(db.goNoGoResults)
               ..deleteAll(db.digitSpanResults)
               ..deleteAll(db.symbolSearchResults),
@@ -83,6 +83,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: const _AccentColorPicker(),
             ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.key),
+            title: const Text('Gemini API Key'),
+            subtitle: const Text('Required for AI features'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _showApiKeyDialog(context),
+          ),
           const Divider(),
           ListTile(
             leading: const Icon(Icons.backup),
@@ -195,6 +203,75 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
         ) ==
         true;
+  }
+
+  Future<void> _showApiKeyDialog(BuildContext ctx) async {
+    final currentKey = await PrefsService.getGeminiApiKey();
+    final controller = TextEditingController(text: currentKey ?? '');
+    
+    final result = await showDialog<String?>(
+      context: ctx,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Gemini API Key'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter your Gemini API key to enable AI features like drug information and trend analysis.',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Get a free API key from Google AI Studio:\naistudio.google.com',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'API Key',
+                hintText: 'AIza...',
+                border: OutlineInputBorder(),
+              ),
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Cancel'),
+          ),
+          if (currentKey != null && currentKey.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, ''),
+              child: const Text('Remove', style: TextStyle(color: Colors.red)),
+            ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogCtx, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null) {
+      await PrefsService.setGeminiApiKey(result.isEmpty ? null : result);
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.isEmpty 
+                  ? 'API key removed' 
+                  : 'API key saved',
+            ),
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _exportEverything(BuildContext ctx, WidgetRef ref) async {

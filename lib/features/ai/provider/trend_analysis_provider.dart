@@ -1,5 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:libretrac/features/ai/service/openai_api_service.dart';
+import 'package:libretrac/features/ai/service/gemini_api_service.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
 enum TrendRange { week, month, threeMonths, sixMonths }
@@ -24,7 +24,6 @@ final analysisProvider = FutureProvider.autoDispose<String?>((ref) async {
   final moods = await db.moodEntriesSince(since);
   final reactions = await db.reactionResultsSince(since);
   final stroop = await db.stroopResultsSince(since);
-  final nBack = await db.nBackResultsSince(since);
   final goNoGo = await db.goNoGoResultsSince(since);
   final digitSpan = await db.digitSpanResultsSince(since);
   final symbolSearch = await db.symbolSearchResultsSince(since);
@@ -36,14 +35,13 @@ final analysisProvider = FutureProvider.autoDispose<String?>((ref) async {
       moods.isNotEmpty ||
       reactions.isNotEmpty ||
       stroop.isNotEmpty ||
-      nBack.isNotEmpty ||
       goNoGo.isNotEmpty ||
       digitSpan.isNotEmpty ||
       symbolSearch.isNotEmpty;
 
   if (!hasData) return null;
 
-  final api = OpenAIAPI.instance;
+  final api = GeminiAPI.instance;
 
   return api.analyzeTrends(
     TrendRequest(
@@ -51,7 +49,6 @@ final analysisProvider = FutureProvider.autoDispose<String?>((ref) async {
       moods: moods,
       reactions: reactions,
       stroop: stroop,
-      nBack: nBack,
       goNoGo: goNoGo,
       digitSpan: digitSpan,
       symbolSearch: symbolSearch,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:libretrac/features/ai/provider/trend_analysis_provider.dart';
 import 'package:flutter_riverpod/src/consumer.dart';
 
@@ -14,19 +15,36 @@ extension on TrendRange {
 
 String trendLabel(TrendRange r) => r.label;
 
+Future<void> _reportIssue() async {
+  final uri = Uri(
+    scheme: 'mailto',
+    path: 'billy@billyrigdon.dev',
+    // queryParameters handles encoding better than manual string concatenation
+    queryParameters: {
+      'subject': 'LibreTrac AI Issue Report - Trend Analysis',
+      'body': 'Please describe the issue with the AI-generated analysis:\n\n',
+    },
+  );
+  try {
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (e) {
+    debugPrint('Could not launch mailto: $e');
+  }
+}
+
 void showTrendDialog(BuildContext context, WidgetRef ref) {
   showDialog(
     context: context,
     barrierDismissible: false,
     builder: (ctx) {
       TrendRange selected = ref.read(trendRangeProvider);
-      Future<String?>? future; // set after “Run” is tapped
+      Future<String?>? future;
+      final subtleColor = Theme.of(ctx).colorScheme.onSurfaceVariant.withOpacity(0.7);
 
       return StatefulBuilder(
         builder: (ctx, setState) {
           Widget body;
 
-          // ① selector + run-button  ────────────────────────────────
           if (future == null) {
             body = Column(
               mainAxisSize: MainAxisSize.min,
@@ -42,14 +60,13 @@ void showTrendDialog(BuildContext context, WidgetRef ref) {
                           onSelected: (_) {
                             setState(() {
                               selected = r;
-                              ref.read(trendRangeProvider.notifier).state =
-                                  r; // update global state
+                              ref.read(trendRangeProvider.notifier).state = r;
                             });
                           },
                         );
                       }).toList(),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.auto_awesome),
                   label: const Text('Run Analysis'),
@@ -59,11 +76,26 @@ void showTrendDialog(BuildContext context, WidgetRef ref) {
                     });
                   },
                 ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 12, color: subtleColor),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'AI may contain errors. Not medical advice.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: subtleColor,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             );
-          }
-          // ② progress / result  ────────────────────────────────────
-          else {
+          } else {
             body = FutureBuilder<String?>(
               future: future,
               builder: (ctx, snap) {
@@ -85,17 +117,55 @@ void showTrendDialog(BuildContext context, WidgetRef ref) {
                   );
                 } else {
                   final text = snap.data;
-                  return SingleChildScrollView(
-                    child:
-                        text == null
-                            ? const Text(
-                              'No data available for this period.',
-                              style: TextStyle(color: Colors.grey),
-                            )
-                            : MarkdownBody(
-                              data: text,
-                              selectable: true, // allows copy-and-paste
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Flexible(
+                        child: SingleChildScrollView(
+                          child:
+                              text == null
+                                  ? const Text(
+                                    'No data available for this period.',
+                                    style: TextStyle(color: Colors.grey),
+                                  )
+                                  : MarkdownBody(
+                                    data: text,
+                                    selectable: true,
+                                  ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Icon(Icons.auto_awesome, size: 11, color: subtleColor),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              'AI-generated · may contain errors',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: subtleColor,
+                                fontStyle: FontStyle.italic,
+                              ),
                             ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _reportIssue,
+                            icon: Icon(Icons.flag_outlined, size: 12, color: subtleColor),
+                            label: Text(
+                              'Report',
+                              style: TextStyle(fontSize: 10, color: subtleColor),
+                            ),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   );
                 }
               },
@@ -104,7 +174,11 @@ void showTrendDialog(BuildContext context, WidgetRef ref) {
 
           return AlertDialog(
             title: const Text('AI Trends'),
-            content: SizedBox(width: 320, child: body),
+            content: SizedBox(
+              width: 320,
+              height: future != null ? 400 : null,
+              child: body,
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),

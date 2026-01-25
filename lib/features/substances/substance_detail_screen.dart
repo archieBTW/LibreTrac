@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/features/substances/add_edit_substance_screen.dart';
-import 'package:libretrac/features/ai/service/openai_api_service.dart';
+import 'package:libretrac/features/ai/service/gemini_api_service.dart';
 
 class SubstanceDetailScreen extends ConsumerStatefulWidget {
   const SubstanceDetailScreen({
@@ -26,16 +27,33 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _summary = OpenAIAPI.instance.getSubstanceProfile(
+    _summary = GeminiAPI.instance.getSubstanceProfile(
       widget.substance.name,
       widget.substances,
       notes: widget.substance.notes,
     );
   }
 
+  Future<void> _reportIssue() async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: 'billy@billyrigdon.dev',
+      queryParameters: {
+        'subject': 'LibreTrac AI Issue Report - ${widget.substance.name}',
+        'body': 'Please describe the issue with the AI-generated information:\n\n',
+      },
+    );
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('Could not launch mailto: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext ctx) {
-    final dateFmt = DateFormat.yMMMd(); // e.g. “Jun 22, 2025”
+    final dateFmt = DateFormat.yMMMd();
+    final subtleColor = Theme.of(ctx).colorScheme.onSurfaceVariant.withOpacity(0.7);
 
     return Scaffold(
       appBar: AppBar(
@@ -78,6 +96,28 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                 Text(widget.substance.notes!),
               ],
               const SizedBox(height: 24),
+              
+              // Subtle AI section header
+              Row(
+                children: [
+                  Icon(
+                    Icons.auto_awesome,
+                    size: 14,
+                    color: subtleColor,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'AI-generated · may contain errors',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: subtleColor,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              
               FutureBuilder<String>(
                 future: _summary,
                 builder: (_, snap) {
@@ -92,6 +132,37 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                     styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(ctx)),
                   );
                 },
+              ),
+              
+              const SizedBox(height: 20),
+              
+              // Bottom row with disclaimer and report button
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Not medical advice. Consult a healthcare provider.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        color: subtleColor,
+                      ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: _reportIssue,
+                    icon: Icon(Icons.flag_outlined, size: 14, color: subtleColor),
+                    label: Text(
+                      'Report issue',
+                      style: TextStyle(fontSize: 11, color: subtleColor),
+                    ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

@@ -18,7 +18,6 @@ part 'app_database.g.dart';
     ReactionResults,
     SleepEntries,
     StroopResults,
-    NBackResults,
     GoNoGoResults,
     DigitSpanResults,
     SymbolSearchResults,

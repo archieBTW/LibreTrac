@@ -17,15 +17,6 @@ class StroopResults extends Table {
   RealColumn get deltaMs => real()(); // incongruent − congruent
 }
 
-class NBackResults extends Table {
-  IntColumn get id => integer().autoIncrement()();
-  DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();
-  IntColumn get n => integer()();
-  IntColumn get trials => integer()();
-  IntColumn get correct => integer()();
-  RealColumn get percentCorrect => real()(); // 0–1
-}
-
 class GoNoGoResults extends Table {
   IntColumn get id => integer().autoIncrement()();
   DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();

@@ -1,13 +1,12 @@
 import 'package:drift/drift.dart' as drift;
 import 'package:libretrac/core/database/app_database.dart';
 
-enum CogTestKind { reaction, stroop, nBack, goNoGo, digitSpan, symbolSearch }
+enum CogTestKind { reaction, stroop, goNoGo, digitSpan, symbolSearch }
 
 extension CogTestX on CogTestKind {
   String get label => switch (this) {
     CogTestKind.reaction => 'Reaction Time',
     CogTestKind.stroop => 'Stroop Δ',
-    CogTestKind.nBack => 'N-Back %',
     CogTestKind.goNoGo => 'Go/No-Go RT',
     CogTestKind.digitSpan => 'Digit Span',
     CogTestKind.symbolSearch => 'Symbol Search RT',
@@ -17,7 +16,6 @@ extension CogTestX on CogTestKind {
   double y(dynamic row) => switch (this) {
     CogTestKind.reaction => row.averageTime,
     CogTestKind.stroop => row.deltaMs,
-    CogTestKind.nBack => row.percentCorrect * 100,
     CogTestKind.goNoGo => row.meanRt,
     CogTestKind.digitSpan => row.bestSpan.toDouble(),
     CogTestKind.symbolSearch => row.meanRt,
@@ -27,7 +25,6 @@ extension CogTestX on CogTestKind {
   drift.TableInfo<dynamic, dynamic> table(AppDatabase db) => switch (this) {
     CogTestKind.reaction => db.reactionResults,
     CogTestKind.stroop => db.stroopResults,
-    CogTestKind.nBack => db.nBackResults,
     CogTestKind.goNoGo => db.goNoGoResults,
     CogTestKind.digitSpan => db.digitSpanResults,
     CogTestKind.symbolSearch => db.symbolSearchResults,
@@ -38,7 +35,7 @@ extension CogTestX on CogTestKind {
     CogTestKind.goNoGo ||
     CogTestKind.symbolSearch => true,
     CogTestKind.stroop => true, // lower Stroop Δ → less interference
-    _ => false, // n-Back %, DigitSpan ↑ is better
+    _ => false, // DigitSpan ↑ is better
   };
 
   (double lo, double hi) get refRange => switch (this) {
@@ -46,7 +43,6 @@ extension CogTestX on CogTestKind {
     CogTestKind.goNoGo => (250, 600),
     CogTestKind.symbolSearch => (1000, 4000),
     CogTestKind.stroop => (0, 400),
-    CogTestKind.nBack => (0, 100),
     CogTestKind.digitSpan => (2, 9),
   };
 }

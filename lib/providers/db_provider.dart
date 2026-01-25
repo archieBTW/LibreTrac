@@ -152,8 +152,6 @@ extension BackupOps on AppDatabase {
           (await select(reactionResults).get()).map((e) => e.toJson()).toList(),
       'stroopResults':
           (await select(stroopResults).get()).map((e) => e.toJson()).toList(),
-      'nBackResults':
-          (await select(nBackResults).get()).map((e) => e.toJson()).toList(),
       'goNoGoResults':
           (await select(goNoGoResults).get()).map((e) => e.toJson()).toList(),
       'digitSpanResults':
@@ -263,7 +261,6 @@ extension BackupOps on AppDatabase {
               ..deleteAll(moodEntries)
               ..deleteAll(reactionResults)
               ..deleteAll(stroopResults)
-              ..deleteAll(nBackResults)
               ..deleteAll(goNoGoResults)
               ..deleteAll(digitSpanResults)
               ..deleteAll(symbolSearchResults)
@@ -302,11 +299,6 @@ extension BackupOps on AppDatabase {
         json['stroopResults'],
         (m) => StroopResult.fromJson(m).toCompanion(true),
         stroopResults,
-      );
-      await _addAll(
-        json['nBackResults'],
-        (m) => NBackResult.fromJson(m).toCompanion(true),
-        nBackResults,
       );
       await _addAll(
         json['goNoGoResults'],
@@ -430,7 +422,7 @@ final filteredMoodEntriesProvider = StreamProvider.autoDispose.family<
 
 /* ─────────────────────  TREND-QUERY HELPERS  ──────────────────────
    One-shot queries that the HomeScreen uses to build the payload
-   for the OpenAI trend-analysis call.
+   for the Gemini AI trend-analysis call.
 ─────────────────────────────────────────────────────────────────── */
 
 /// Extension on the generated `AppDatabase` that exposes three concise
@@ -472,11 +464,6 @@ extension TrendQueries on AppDatabase {
       ..where((t) => t.timestamp.isBiggerOrEqualValue(since))).get();
   }
 
-  Future<List<NBackResult>> nBackResultsSince(DateTime since) {
-    return (select(nBackResults)
-      ..where((t) => t.timestamp.isBiggerOrEqualValue(since))).get();
-  }
-
   Future<List<GoNoGoResult>> goNoGoResultsSince(DateTime since) {
     return (select(goNoGoResults)
       ..where((t) => t.timestamp.isBiggerOrEqualValue(since))).get();
@@ -514,6 +501,33 @@ final substancesActiveSinceProvider = FutureProvider.autoDispose
 final sleepStreamProvider = StreamProvider.autoDispose(
   (ref) => ref.watch(dbProvider).watchAllSleep(),
 );
+
+/* ─────────────────────  COGNITIVE STREAMS  ──────────────────────── */
+
+final reactionResultsStreamProvider = StreamProvider.autoDispose<List<ReactionResult>>((ref) {
+  final db = ref.watch(dbProvider);
+  return db.select(db.reactionResults).watch();
+});
+
+final stroopResultsStreamProvider = StreamProvider.autoDispose<List<StroopResult>>((ref) {
+  final db = ref.watch(dbProvider);
+  return db.select(db.stroopResults).watch();
+});
+
+final goNoGoResultsStreamProvider = StreamProvider.autoDispose<List<GoNoGoResult>>((ref) {
+  final db = ref.watch(dbProvider);
+  return db.select(db.goNoGoResults).watch();
+});
+
+final digitSpanResultsStreamProvider = StreamProvider.autoDispose<List<DigitSpanResult>>((ref) {
+  final db = ref.watch(dbProvider);
+  return db.select(db.digitSpanResults).watch();
+});
+
+final symbolSearchResultsStreamProvider = StreamProvider.autoDispose<List<SymbolSearchResult>>((ref) {
+  final db = ref.watch(dbProvider);
+  return db.select(db.symbolSearchResults).watch();
+});
 
 enum JournalFilter { all, notesOnly }
 
@@ -839,9 +853,6 @@ final cognitiveTopScoresProvider = FutureProvider<Map<CogTestKind, String>>((
             'Δ${best.deltaMs.toStringAsFixed(0)}ms '
             '(In: ${best.incongruentMs.toStringAsFixed(0)}ms, '
             'Con: ${best.congruentMs.toStringAsFixed(0)}ms)';
-        break;
-      case CogTestKind.nBack:
-        scoreStr = '${best.correct}/${best.trials} correct';
         break;
       case CogTestKind.goNoGo:
         scoreStr =
