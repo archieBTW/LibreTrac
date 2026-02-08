@@ -29,155 +29,166 @@ class JournalListScreen extends ConsumerWidget {
     final moods = moodAsync.value ?? const <MoodEntry>[];
     final sleeps = sleepAsync.value ?? const <SleepEntry>[];
 
-    final rows = <_JournalRow>[];
-
-    // for (final m in moods) {
-    //   if (m.notes?.trim().isNotEmpty ?? false) rows.add(_JournalRow.mood(m));
-    // }
-
-    // for (final s in sleeps) {
-    //   if (s.dreamJournal?.trim().isNotEmpty ?? false) {
-    //     rows.add(_JournalRow.sleep(s));
-    //   }
-    // }
+    final moodRows = <_JournalRow>[];
+    final sleepRows = <_JournalRow>[];
 
     final filter = ref.watch(journalFilterProvider);
-
     final metricDefs = ref.watch(customMetricsProvider);
 
     for (final m in moods) {
       final hasNote = (m.notes?.trim().isNotEmpty ?? false);
       if (filter == JournalFilter.all || hasNote) {
-        rows.add(_JournalRow.mood(m, metricDefs));
+        moodRows.add(_JournalRow.mood(m, metricDefs));
       }
     }
 
     for (final s in sleeps) {
       final hasDream = (s.dreamJournal?.trim().isNotEmpty ?? false);
       if (filter == JournalFilter.all || hasDream) {
-        rows.add(_JournalRow.sleep(s));
+        sleepRows.add(_JournalRow.sleep(s));
       }
     }
 
-    rows.sort((a, b) => b.date.compareTo(a.date));
+    moodRows.sort((a, b) => b.date.compareTo(a.date));
+    sleepRows.sort((a, b) => b.date.compareTo(a.date));
 
-    final dateFmt = DateFormat.yMMMd();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(filter == JournalFilter.all ? 'All Check-ins' : 'Journals'),
-        actions: [
-          PopupMenuButton<JournalFilter>(
-            icon: const Icon(Icons.filter_list),
-            onSelected:
-                (val) => ref.read(journalFilterProvider.notifier).state = val,
-            itemBuilder:
-                (ctx) => [
-                  const PopupMenuItem(
-                    value: JournalFilter.all,
-                    child: Text('All Check-ins'),
-                  ),
-                  const PopupMenuItem(
-                    value: JournalFilter.notesOnly,
-                    child: Text('Journal Entries Only'),
-                  ),
-                ],
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            filter == JournalFilter.all ? 'All Check-ins' : 'Journals',
           ),
-        ],
+          bottom: const TabBar(
+            tabs: [Tab(text: 'Mood'), Tab(text: 'Sleep')],
+          ),
+          actions: [
+            PopupMenuButton<JournalFilter>(
+              icon: const Icon(Icons.filter_list),
+              onSelected:
+                  (val) => ref.read(journalFilterProvider.notifier).state = val,
+              itemBuilder:
+                  (ctx) => [
+                    const PopupMenuItem(
+                      value: JournalFilter.all,
+                      child: Text('All Check-ins'),
+                    ),
+                    const PopupMenuItem(
+                      value: JournalFilter.notesOnly,
+                      child: Text('Journal Entries Only'),
+                    ),
+                  ],
+            ),
+          ],
+        ),
+        body: TabBarView(
+          children: [
+            _JournalList(rows: moodRows),
+            _JournalList(rows: sleepRows),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed:
+              () => Navigator.push(
+                ctx,
+                MaterialPageRoute(builder: (_) => const MoodCheckInScreen()),
+              ),
+          child: const Icon(Icons.add),
+        ),
       ),
-      body:
-          rows.isEmpty
-              ? const Center(child: Text('No journal entries yet.'))
-              : ListView.separated(
-                itemCount: rows.length,
-                separatorBuilder: (_, __) => const Divider(height: 0),
-                itemBuilder: (_, i) {
-                  final row = rows[i];
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 4,
-                    ),
-                    leading: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          row.isSleep ? Icons.bedtime : Icons.mood,
-                          color:
-                              row.isSleep
-                                  ? Theme.of(ctx).colorScheme.primary
-                                  : Theme.of(ctx).colorScheme.secondary,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          DateFormat.MMMd().format(row.date),
-                          style: const TextStyle(fontSize: 11),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                    title: null,
-                    subtitle: SizedBox(
-                      height: 80,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (row.miniBars.isNotEmpty)
-                            MiniBarGraph(row.miniBars),
-                          if (row.preview.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.all(8),
-                              child: Text(
-                                row.preview,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontStyle:
-                                      row.preview.startsWith('(')
-                                          ? FontStyle.italic
-                                          : null,
-                                  color:
-                                      row.preview.startsWith('(')
-                                          ? Theme.of(ctx).colorScheme.onSurface
-                                              .withOpacity(0.6)
-                                          : null,
-                                ),
-                              ),
-                            ),
-                        ],
+    );
+  }
+}
+
+class _JournalList extends StatelessWidget {
+  const _JournalList({required this.rows});
+
+  final List<_JournalRow> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    if (rows.isEmpty) {
+      return const Center(child: Text('No entries found.'));
+    }
+
+    return ListView.separated(
+      itemCount: rows.length,
+      separatorBuilder: (_, __) => const Divider(height: 0),
+      itemBuilder: (ctx, i) {
+        final row = rows[i];
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 4,
+          ),
+          leading: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                row.isSleep ? Icons.bedtime : Icons.mood,
+                color:
+                    row.isSleep
+                        ? Theme.of(ctx).colorScheme.primary
+                        : Theme.of(ctx).colorScheme.secondary,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                DateFormat.MMMd().format(row.date),
+                style: const TextStyle(fontSize: 11),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          title: null,
+          subtitle: SizedBox(
+            height: 80,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (row.miniBars.isNotEmpty) MiniBarGraph(row.miniBars),
+                if (row.preview.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Text(
+                      row.preview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontStyle:
+                            row.preview.startsWith('(')
+                                ? FontStyle.italic
+                                : null,
+                        color:
+                            row.preview.startsWith('(')
+                                ? Theme.of(ctx).colorScheme.onSurface
+                                    .withValues(alpha: 0.6)
+                                : null,
                       ),
                     ),
-                    onTap: () {
-                      if (row.isSleep) {
-                        Navigator.push(
-                          ctx,
-                          MaterialPageRoute(
-                            builder:
-                                (_) => SleepDetailScreen(entry: row.sleep!),
-                          ),
-                        );
-                      } else {
-                        Navigator.push(
-                          ctx,
-                          MaterialPageRoute(
-                            builder:
-                                (_) => JournalDetailScreen(entry: row.mood!),
-                          ),
-                        );
-                      }
-                    },
-                  );
-                },
-              ),
-      floatingActionButton: FloatingActionButton(
-        onPressed:
-            () => Navigator.push(
-              ctx,
-              MaterialPageRoute(builder: (_) => const MoodCheckInScreen()),
+                  ),
+              ],
             ),
-        child: const Icon(Icons.add),
-      ),
+          ),
+          onTap: () {
+            if (row.isSleep) {
+              Navigator.push(
+                ctx,
+                MaterialPageRoute(
+                  builder: (_) => SleepDetailScreen(entry: row.sleep!),
+                ),
+              );
+            } else {
+              Navigator.push(
+                ctx,
+                MaterialPageRoute(
+                  builder: (_) => JournalDetailScreen(entry: row.mood!),
+                ),
+              );
+            }
+          },
+        );
+      },
     );
   }
 }

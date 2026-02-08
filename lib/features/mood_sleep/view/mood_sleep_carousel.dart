@@ -70,6 +70,7 @@ class MoodSleepCarousel extends StatelessWidget {
                     allMetrics: allMetrics, //ref.watch(customMetricsProvider),
                     onMetricToggle: onMetricToggle,
                     customMetrics: customMetrics,
+                    window: window,
                   )
                 else
                   const OnboardCard(

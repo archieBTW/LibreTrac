@@ -11,6 +11,7 @@ class MoodChartPage extends StatelessWidget {
     required this.allMetrics,
     required this.onMetricToggle,
     required this.customMetrics,
+    required this.window,
     super.key,
   });
 
@@ -22,6 +23,7 @@ class MoodChartPage extends StatelessWidget {
 
   final void Function(String metric, bool isSelected) onMetricToggle;
   final List<CustomMetric>? customMetrics;
+  final MoodWindow window;
 
   List<LineChartBarData> _generateMoodLines(List<MoodEntry> entries) {
     final List<LineChartBarData> lines = [];
@@ -166,10 +168,37 @@ class MoodChartPage extends StatelessWidget {
                           return const SizedBox();
                         }
                         final d = ordered[i].timestamp;
-                        return Text(
-                          '${d.month}/${d.day}',
-                          style: const TextStyle(fontSize: 10),
-                        );
+
+                        Widget label(String text) =>
+                            Text(text, style: const TextStyle(fontSize: 10));
+
+                        switch (window) {
+                          case MoodWindow.week:
+                            return label('${d.month}/${d.day}');
+                          case MoodWindow.month:
+                            // Show date if it's the first entry of the week
+                            // i.e., different week than the previous point
+                            if (i == 0) {
+                              return label('${d.month}/${d.day}');
+                            } else {
+                              final prev = ordered[i - 1].timestamp;
+                              if (!_isSameWeek(prev, d)) {
+                                return label('${d.month}/${d.day}');
+                              }
+                            }
+                            return const SizedBox();
+                          case MoodWindow.threeMonths:
+                          case MoodWindow.sixMonths:
+                            if (i == 0) {
+                              return label(_monthName(d.month));
+                            } else {
+                              final prev = ordered[i - 1].timestamp;
+                              if (prev.month != d.month) {
+                                return label(_monthName(d.month));
+                              }
+                            }
+                            return const SizedBox();
+                        }
                       },
                     ),
                   ),
@@ -181,5 +210,35 @@ class MoodChartPage extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  bool _isSameWeek(DateTime a, DateTime b) {
+    // Calculate the start of the week (Monday) for both dates
+    final aStart = a.subtract(Duration(days: a.weekday - 1));
+    final bStart = b.subtract(Duration(days: b.weekday - 1));
+
+    // Compare year, month, day of the week-start
+    return aStart.year == bStart.year &&
+        aStart.month == bStart.month &&
+        aStart.day == bStart.day;
+  }
+
+  String _monthName(int month) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    if (month < 1 || month > 12) return '';
+    return months[month - 1];
   }
 }
