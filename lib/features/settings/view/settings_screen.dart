@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
@@ -282,18 +283,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final archive = Archive();
 
-    // Replace full path with 'profile.jpg' if exists
+    // Profile picture export
     final profilePath = prefs.getString('user_profile_picture');
-    debugPrint(profilePath);
-    if (profilePath != null && File(profilePath).existsSync()) {
-      debugPrint('saving');
+    if (!kIsWeb && profilePath != null && File(profilePath).existsSync()) {
       final profileFile = File(profilePath);
       final bytes = profileFile.readAsBytesSync();
       final ext = profilePath.split('.').last;
       final archiveFile = ArchiveFile('profile.$ext', bytes.length, bytes);
       archive.addFile(archiveFile);
-
-      // Override the picture path in prefs
       prefsJson['user_profile_picture'] = 'profile.$ext';
     }
 
@@ -306,23 +303,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
 
     final zipBytes = ZipEncoder().encode(archive)!;
-    final tmpDir = await getTemporaryDirectory();
-    final file = File(
-      '${tmpDir.path}/libretrac_backup_${DateTime.now().toIso8601String()}.zip',
-    );
-    await file.writeAsBytes(zipBytes);
+    final fileName = 'libretrac_backup_${DateTime.now().toIso8601String()}.zip';
 
-    await Share.shareXFiles(
-      [XFile(file.path)],
-      text:
-          'LibreTrac backup – contains all data, prefs, and your profile picture',
-    );
+    if (kIsWeb) {
+      await Share.shareXFiles(
+        [XFile.fromData(Uint8List.fromList(zipBytes), name: fileName, mimeType: 'application/zip')],
+        text: 'LibreTrac backup',
+      );
+    } else {
+      final tmpDir = await getTemporaryDirectory();
+      final file = File('${tmpDir.path}/$fileName');
+      await file.writeAsBytes(zipBytes);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: 'LibreTrac backup – contains all data, prefs, and your profile picture',
+      );
+    }
   }
 
   Future<void> _importEverything(BuildContext ctx, WidgetRef ref) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['zip'],
+      withData: kIsWeb,
     );
     if (result == null) return;
 
@@ -349,8 +353,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     if (ok != true) return;
 
-    final zipFile = File(result.files.single.path!);
-    final zipBytes = zipFile.readAsBytesSync();
+    final Uint8List zipBytes;
+    if (kIsWeb) {
+      zipBytes = result.files.single.bytes!;
+    } else {
+      final zipFile = File(result.files.single.path!);
+      zipBytes = zipFile.readAsBytesSync();
+    }
+    
     final archive = ZipDecoder().decodeBytes(zipBytes);
 
     final dataFile = archive.files.firstWhere((f) => f.name == 'data.json');
@@ -380,25 +390,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       }
     }
 
-    for (final f in archive.files) {
-      debugPrint('File in archive: ${f.name}');
-    }
-
     final profileFile = archive.files.firstWhereOrNull(
-      (f) => f.name.startsWith('profile.'), // <- removed isFile check
+      (f) => f.name.startsWith('profile.'),
     );
 
-    if (profileFile != null) {
-      print('import img');
+    if (profileFile != null && !kIsWeb) {
       final tmpDir = await getTemporaryDirectory();
       final ext = profileFile.name.split('.').last;
       final newPath = '${tmpDir.path}/restored_profile.$ext';
-      final restoredFile = File(newPath)
-        ..writeAsBytesSync(profileFile.content as List<int>);
+      File(newPath).writeAsBytesSync(profileFile.content as List<int>);
 
       // Actually update SharedPreferences
       await prefs.setString('user_profile_picture', newPath);
     }
+    
     await ref.read(customMetricsProvider.notifier).reload();
     await ref.read(userProfileProvider.notifier).reload();
     await ref.read(themeModeProvider.notifier).reload();

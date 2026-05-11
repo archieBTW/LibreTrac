@@ -1,14 +1,10 @@
-import 'dart:io';
-
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+import 'package:drift_flutter/drift_flutter.dart';
 import 'package:libretrac/core/database/mood_entries.dart';
 import 'package:libretrac/core/database/reaction_results.dart';
 import 'package:libretrac/core/database/sleep_entries.dart';
 import 'package:libretrac/core/database/substances.dart';
 import 'package:libretrac/core/database/type_converters.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 part 'app_database.g.dart';
 
 @DriftDatabase(
@@ -66,10 +62,12 @@ class AppDatabase extends _$AppDatabase {
   }
 }
 
-LazyDatabase _openConnection() {
-  return LazyDatabase(() async {
-    final dbFolder = await getApplicationDocumentsDirectory();
-    final file = File(p.join(dbFolder.path, 'libretrac.sqlite'));
-    return NativeDatabase.createInBackground(file);
-  });
+QueryExecutor _openConnection() {
+  return driftDatabase(
+    name: 'libretrac',
+    web: DriftWebOptions(
+      sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+      driftWorker: Uri.parse('drift_worker.js'),
+    ),
+  );
 }

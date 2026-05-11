@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:archive/archive.dart';
@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/features/cognitive/model/cog_test_kind.dart';
 import 'package:libretrac/services/streak_popup_service.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/database/app_database.dart';
 
@@ -217,7 +216,7 @@ extension BackupOps on AppDatabase {
     );
   }
 
-  Future<File> exportAllToZip(AppDatabase db) async {
+  Future<Uint8List> exportAllToZip(AppDatabase db) async {
     final dataJson = await db.exportData();
     final prefsJson = await db.exportSharedPrefs();
 
@@ -232,10 +231,7 @@ extension BackupOps on AppDatabase {
     final zipEncoder = ZipEncoder();
     final zipData = zipEncoder.encode(archive)!;
 
-    final tmpDir = await getTemporaryDirectory();
-    final zipFile = File('${tmpDir.path}/libretrac_backup.zip');
-
-    return zipFile.writeAsBytes(zipData);
+    return Uint8List.fromList(zipData);
   }
 
   Future<List<MoodEntry>> getMoodEntriesBetween(DateTime from, DateTime to) {

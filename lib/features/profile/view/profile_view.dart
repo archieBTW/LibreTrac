@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
@@ -98,7 +99,10 @@ class _ProfileViewState extends ConsumerState<ProfileView> {
                     radius: 50,
                     backgroundImage:
                         profile.profilePicturePath != null
-                            ? FileImage(File(profile.profilePicturePath!))
+                            ? (kIsWeb
+                                ? NetworkImage(profile.profilePicturePath!)
+                                    as ImageProvider
+                                : FileImage(File(profile.profilePicturePath!)))
                             : null,
                     child:
                         profile.profilePicturePath == null

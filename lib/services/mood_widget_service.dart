@@ -1,6 +1,7 @@
 // lib/services/mood_widget_service.dart
 import 'package:drift/drift.dart' show OrderingMode, OrderingTerm;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:libretrac/core/database/app_database.dart';
@@ -9,6 +10,7 @@ class MoodWidgetService {
   static final db = AppDatabase();
 
   static Future<void> update() async {
+    if (kIsWeb) return;
     try {
       final rows =
           await (db.select(db.moodEntries)

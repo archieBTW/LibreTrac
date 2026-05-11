@@ -36,7 +36,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_riverpod: ^2.6.1
   drift: ^2.27.0
-  sqlite3_flutter_libs: ^0.5.34
+  drift_flutter: ^0.3.0
+  sqlite3: ^3.3.1
+  sqlite3_flutter_libs: ^0.6.0+eol
   path_provider: ^2.1.5
   path: ^1.9.1
   fl_chart: ^1.0.0

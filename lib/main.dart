@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:libretrac/features/home/view/home_screen.dart';
@@ -31,13 +32,17 @@ void main() async {
   // await NotificationService.init();
   // await NotificationService.scheduleDailyReminders();
 
-  await HomeWidget.registerBackgroundCallback(_widgetCallback);
+  if (!kIsWeb) {
+    await HomeWidget.registerBackgroundCallback(_widgetCallback);
+  }
 
   runApp(ProviderScope(child: const LibreTracApp()));
 
   // 2 — kick the widget after the first frame so ProviderScope is ready
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    MoodWidgetService.update();
+    if (!kIsWeb) {
+      MoodWidgetService.update();
+    }
   });
 }
 
