@@ -353,68 +353,101 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     if (ok != true) return;
 
-    final Uint8List zipBytes;
-    if (kIsWeb) {
-      zipBytes = result.files.single.bytes!;
-    } else {
-      final zipFile = File(result.files.single.path!);
-      zipBytes = zipFile.readAsBytesSync();
-    }
-    
-    final archive = ZipDecoder().decodeBytes(zipBytes);
-
-    final dataFile = archive.files.firstWhere((f) => f.name == 'data.json');
-    final prefsFile = archive.files.firstWhere((f) => f.name == 'prefs.json');
-
-    final dataJson =
-        jsonDecode(utf8.decode(dataFile.content)) as Map<String, dynamic>;
-    final prefsJson =
-        jsonDecode(utf8.decode(prefsFile.content)) as Map<String, dynamic>;
-
-    // Import SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
-    for (final entry in prefsJson.entries) {
-      final key = entry.key;
-      final value = entry.value;
-
-      if (value is bool) {
-        await prefs.setBool(key, value);
-      } else if (value is int) {
-        await prefs.setInt(key, value);
-      } else if (value is double) {
-        await prefs.setDouble(key, value);
-      } else if (value is String) {
-        await prefs.setString(key, value);
-      } else if (value is List && value.every((e) => e is String)) {
-        await prefs.setStringList(key, List<String>.from(value));
+    try {
+      final Uint8List zipBytes;
+      if (kIsWeb) {
+        zipBytes = result.files.single.bytes!;
+      } else {
+        final zipFile = File(result.files.single.path!);
+        zipBytes = zipFile.readAsBytesSync();
       }
-    }
 
-    final profileFile = archive.files.firstWhereOrNull(
-      (f) => f.name.startsWith('profile.'),
-    );
+      final archive = ZipDecoder().decodeBytes(zipBytes);
 
-    if (profileFile != null && !kIsWeb) {
-      final tmpDir = await getTemporaryDirectory();
-      final ext = profileFile.name.split('.').last;
-      final newPath = '${tmpDir.path}/restored_profile.$ext';
-      File(newPath).writeAsBytesSync(profileFile.content as List<int>);
+      final dataFile = archive.files.firstWhere((f) => f.name == 'data.json');
+      final prefsFile = archive.files.firstWhere((f) => f.name == 'prefs.json');
 
-      // Actually update SharedPreferences
-      await prefs.setString('user_profile_picture', newPath);
-    }
-    
-    await ref.read(customMetricsProvider.notifier).reload();
-    await ref.read(userProfileProvider.notifier).reload();
-    await ref.read(themeModeProvider.notifier).reload();
-    await ref.read(accentColorProvider.notifier).reload();
-    // Import DB
-    await ref.read(dbProvider).importData(dataJson);
+      final dataJson =
+          jsonDecode(utf8.decode(dataFile.content as List<int>))
+              as Map<String, dynamic>;
+      final prefsJson =
+          jsonDecode(utf8.decode(prefsFile.content as List<int>))
+              as Map<String, dynamic>;
 
-    if (ctx.mounted) {
-      ScaffoldMessenger.of(
-        ctx,
-      ).showSnackBar(const SnackBar(content: Text('Import complete')));
+      // Import SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      for (final entry in prefsJson.entries) {
+        final key = entry.key;
+        final value = entry.value;
+
+        if (value is bool) {
+          await prefs.setBool(key, value);
+        } else if (value is int) {
+          await prefs.setInt(key, value);
+        } else if (value is double) {
+          await prefs.setDouble(key, value);
+        } else if (value is String) {
+          await prefs.setString(key, value);
+        } else if (value is List && value.every((e) => e is String)) {
+          await prefs.setStringList(key, List<String>.from(value));
+        }
+      }
+
+      final profileFile = archive.files.firstWhereOrNull(
+        (f) => f.name.startsWith('profile.'),
+      );
+
+      if (profileFile != null && !kIsWeb) {
+        final tmpDir = await getTemporaryDirectory();
+        final ext = profileFile.name.split('.').last;
+        final newPath = '${tmpDir.path}/restored_profile.$ext';
+        File(newPath).writeAsBytesSync(profileFile.content as List<int>);
+
+        // Actually update SharedPreferences
+        await prefs.setString('user_profile_picture', newPath);
+      }
+
+      // Import DB
+      await ref.read(dbProvider).importData(dataJson);
+
+      // Reload providers AFTER data is in place
+      await ref.read(customMetricsProvider.notifier).reload();
+      await ref.read(userProfileProvider.notifier).reload();
+      await ref.read(themeModeProvider.notifier).reload();
+      await ref.read(accentColorProvider.notifier).reload();
+
+      // Force refresh of home screen data
+      ref.invalidate(filteredMoodEntriesProvider);
+      ref.invalidate(moodEntriesStreamProvider);
+      ref.invalidate(sleepStreamProvider);
+      ref.invalidate(reactionResultsStreamProvider);
+      ref.invalidate(stroopResultsStreamProvider);
+      ref.invalidate(goNoGoResultsStreamProvider);
+      ref.invalidate(digitSpanResultsStreamProvider);
+      ref.invalidate(symbolSearchResultsStreamProvider);
+
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(
+          ctx,
+        ).showSnackBar(const SnackBar(content: Text('Import complete')));
+      }
+    } catch (e) {
+      if (ctx.mounted) {
+        showDialog(
+          context: ctx,
+          builder:
+              (ctx) => AlertDialog(
+                title: const Text('Import Failed'),
+                content: Text('An error occurred during import: $e'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+        );
+      }
     }
   }
 

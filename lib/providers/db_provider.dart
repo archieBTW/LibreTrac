@@ -201,8 +201,13 @@ extension BackupOps on AppDatabase {
     final rawMetrics = json['customMetrics'];
     Map<String, int>? customMetrics;
 
-    if (rawMetrics is Map<String, dynamic>) {
-      customMetrics = rawMetrics.map((k, v) => MapEntry(k, v as int));
+    if (rawMetrics is String) {
+      try {
+        final decoded = jsonDecode(rawMetrics) as Map<String, dynamic>;
+        customMetrics = decoded.map((k, v) => MapEntry(k, (v as num).toInt()));
+      } catch (_) {}
+    } else if (rawMetrics is Map<String, dynamic>) {
+      customMetrics = rawMetrics.map((k, v) => MapEntry(k, (v as num).toInt()));
     }
 
     return MoodEntry(

@@ -32,9 +32,8 @@ class SingleMetricLine extends StatelessWidget {
         FlSpot(i.toDouble(), getY(ordered[i])),
     ];
 
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.only(right: 8),
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(

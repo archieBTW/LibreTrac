@@ -24,9 +24,8 @@ class SleepChartPage extends StatelessWidget {
       qualitySpots.add(FlSpot(i.toDouble(), e.quality * _qualityScale));
     }
 
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.only(right: 8),
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(

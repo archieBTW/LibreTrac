@@ -126,9 +126,8 @@ class MoodChartPage extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Expanded(
-          child: Card(
-            elevation: 2,
-            margin: const EdgeInsets.only(right: 2),
+          child: Padding(
+            padding: const EdgeInsets.only(right: 16),
             child: LineChart(
               LineChartData(
                 lineTouchData: LineTouchData(

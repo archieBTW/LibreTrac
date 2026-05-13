@@ -7,9 +7,8 @@ class OnboardCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 1,
-      margin: const EdgeInsets.only(right: 8),
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

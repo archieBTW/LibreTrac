@@ -67,8 +67,8 @@ class LibreTracApp extends ConsumerWidget {
     final darkScheme = ColorScheme.fromSeed(
       seedColor: seed,
       brightness: Brightness.dark,
-      surface: const Color(0xFF1A1A1A),
-      background: const Color(0xFF121212),
+      surface: const Color(0xFF000000),
+      background: const Color(0xFF000000),
     );
 
     final lightTheme = ThemeData(
@@ -98,7 +98,7 @@ class LibreTracApp extends ConsumerWidget {
         fillColor: MaterialStateProperty.all(lightScheme.primary),
       ),
       cardTheme: CardThemeData(
-        color: lightScheme.background,
+        color: Colors.transparent,
         elevation: 0,
         shadowColor: Colors.transparent,
       ),
@@ -154,7 +154,7 @@ class LibreTracApp extends ConsumerWidget {
         fillColor: MaterialStateProperty.all(darkScheme.primary),
       ),
       cardTheme: CardThemeData(
-        color: darkScheme.background,
+        color: Colors.transparent,
         elevation: 0,
         shadowColor: Colors.transparent,
       ),

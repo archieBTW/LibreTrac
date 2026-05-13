@@ -8,7 +8,12 @@ import 'package:libretrac/providers/db_provider.dart';
 import 'package:libretrac/core/database/app_database.dart';
 
 class CognitiveChart {
-  showCognitiveChart(WidgetRef ref, MoodWindow window, bool detailed) {
+  showCognitiveChart(
+    WidgetRef ref,
+    MoodWindow window,
+    bool detailed, {
+    bool isDesktop = false,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -22,20 +27,36 @@ class CognitiveChart {
         const SizedBox(height: 12),
 
         SizedBox(
-          height: 220,
-          child: PageView.builder(
-            itemCount: CogTestKind.values.length,
-            controller: PageController(viewportFraction: .92, keepPage: true),
-            itemBuilder: (ctx, index) {
-              final kind = CogTestKind.values[index];
+          height: isDesktop ? 200 : 220,
+          child: isDesktop
+              ? Row(
+                  children: [
+                    for (final kind in CogTestKind.values)
+                      Expanded(
+                        child: _CognitiveChartCard(
+                          kind: kind,
+                          window: window,
+                          detailed: detailed,
+                        ),
+                      ),
+                  ],
+                )
+              : PageView.builder(
+                  itemCount: CogTestKind.values.length,
+                  controller: PageController(
+                    viewportFraction: .92,
+                    keepPage: true,
+                  ),
+                  itemBuilder: (ctx, index) {
+                    final kind = CogTestKind.values[index];
 
-              return _CognitiveChartCard(
-                kind: kind,
-                window: window,
-                detailed: detailed,
-              );
-            },
-          ),
+                    return _CognitiveChartCard(
+                      kind: kind,
+                      window: window,
+                      detailed: detailed,
+                    );
+                  },
+                ),
         ),
       ],
     );

@@ -308,7 +308,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final window = ref.watch(moodWindowProvider);
     final AsyncValue<List<SleepEntry>> sleeps = ref.watch(sleepStreamProvider);
-    // final detailed = ref.watch(showAllCheckInsProvider);
     final customMetrics = ref.watch(customMetricsProvider);
 
     final List<String> allMetrics = customMetrics.map((e) => e.name).toList();
@@ -321,7 +320,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     return PopScope(
-      canPop: false, // () async => false,
+      canPop: false,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('LibreTrac'),
@@ -384,137 +383,144 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
         drawer: MainDrawer(() => setState(() {})),
-        body: Consumer(
-          builder: (context, ref, _) {
-            final detailed = ref.watch(showAllCheckInsProvider);
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final isDesktop = constraints.maxWidth > 900;
 
-            final AsyncValue<List<MoodEntry>> moods = ref.watch(
-              filteredMoodEntriesProvider((
-                window: window,
-                showAllCheckIns: detailed,
-              )),
-            );
+            return Consumer(
+              builder: (context, ref, _) {
+                final detailed = ref.watch(showAllCheckInsProvider);
 
-            return moods.when(
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, __) => Center(child: Text('Error: $e')),
-              data: (entries) {
-                bool hasEnoughData = true;
-                final ordered = [...entries] // copy
-                ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+                final AsyncValue<List<MoodEntry>> moods = ref.watch(
+                  filteredMoodEntriesProvider((
+                    window: window,
+                    showAllCheckIns: detailed,
+                  )),
+                );
 
-                return Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      if (!hasEnoughData)
-                        SizedBox(
-                          height: 350,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.sentiment_satisfied_alt,
-                                size: 80,
-                                color: Colors.grey,
-                              ),
-                              SizedBox(height: 12),
-                              Text(
-                                'Keep checking in daily to see your mood trends!',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                              SizedBox(height: 24),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceAround,
+                return moods.when(
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (e, __) => Center(child: Text('Error: $e')),
+                  data: (entries) {
+                    bool hasEnoughData = true;
+                    final ordered = [...entries] // copy
+                      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+                    return Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          if (!hasEnoughData)
+                            SizedBox(
+                              height: 350,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  ElevatedButton.icon(
-                                    icon: Icon(Icons.edit),
-                                    label: Text('Mood Check-In'),
-                                    onPressed: () async {
-                                      await Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder:
-                                              (_) => const MoodCheckInScreen(),
-                                        ),
-                                      );
-                                    },
+                                  const Icon(
+                                    Icons.sentiment_satisfied_alt,
+                                    size: 80,
+                                    color: Colors.grey,
                                   ),
-                                  SizedBox(width: 12),
-                                  ElevatedButton.icon(
-                                    icon: Icon(Icons.flash_on),
-                                    label: Text('Cognitive Tests'),
-                                    onPressed: _showCognitiveSheet,
+                                  const SizedBox(height: 12),
+                                  const Text(
+                                    'Keep checking in daily to see your mood trends!',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 24),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceAround,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        icon: const Icon(Icons.edit),
+                                        label: const Text('Mood Check-In'),
+                                        onPressed: () async {
+                                          await Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                              builder:
+                                                  (_) => const MoodCheckInScreen(),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      const SizedBox(width: 12),
+                                      ElevatedButton.icon(
+                                        icon: const Icon(Icons.flash_on),
+                                        label: const Text('Cognitive Tests'),
+                                        onPressed: _showCognitiveSheet,
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                            ],
-                          ),
-                        ),
-                      if (hasEnoughData) ...[
-                        Expanded(
-                          child: MoodSleepCarousel(
-                            moodEntries: entries,
-                            sleepEntries: sleeps.value ?? const [],
-                            orderedMood: ordered,
-                            selectedMetrics: selectedMetrics,
-                            moodColors: moodColors,
-                            allMetrics: ref.watch(customMetricsProvider),
-                            window: window,
-                            customMetrics: customMetrics,
-                            onMetricToggle: (metric, isSelected) {
-                              setState(() {
-                                if (isSelected) {
-                                  selectedMetrics.add(metric);
-                                } else if (selectedMetrics.length > 1) {
-                                  selectedMetrics.remove(metric);
-                                }
-                              });
-                            },
-                          ),
-                        ),
-                        FutureBuilder(
-                          future:
-                              ref
+                            ),
+                          if (hasEnoughData) ...[
+                            Expanded(
+                              child: MoodSleepCarousel(
+                                moodEntries: entries,
+                                sleepEntries: sleeps.value ?? const [],
+                                orderedMood: ordered,
+                                selectedMetrics: selectedMetrics,
+                                moodColors: moodColors,
+                                allMetrics: ref.watch(customMetricsProvider),
+                                window: window,
+                                customMetrics: customMetrics,
+                                isDesktop: isDesktop,
+                                onMetricToggle: (metric, isSelected) {
+                                  setState(() {
+                                    if (isSelected) {
+                                      selectedMetrics.add(metric);
+                                    } else if (selectedMetrics.length > 1) {
+                                      selectedMetrics.remove(metric);
+                                    }
+                                  });
+                                },
+                              ),
+                            ),
+                            FutureBuilder(
+                              future: ref
                                   .read(dbProvider)
                                   .select(ref.read(dbProvider).reactionResults)
                                   .get(),
-                          builder: (context, snap) {
-                            return CognitiveChart().showCognitiveChart(
-                              ref,
-                              window,
-                              detailed,
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                icon: const Icon(Icons.edit),
-                                label: const Text('Check-In'),
-                                onPressed: _showCheckInSheet,
-                              ),
+                              builder: (context, snap) {
+                                return CognitiveChart().showCognitiveChart(
+                                  ref,
+                                  window,
+                                  detailed,
+                                  isDesktop: isDesktop,
+                                );
+                              },
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                icon: const Icon(Icons.flash_on),
-                                label: const Text('Cognitive Tests'),
-                                onPressed: _showCognitiveSheet,
-                              ),
+                            const SizedBox(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceAround,
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    icon: const Icon(Icons.edit),
+                                    label: const Text('Check-In'),
+                                    onPressed: _showCheckInSheet,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    icon: const Icon(Icons.flash_on),
+                                    label: const Text('Cognitive Tests'),
+                                    onPressed: _showCognitiveSheet,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                      ],
-                    ],
-                  ),
+                        ],
+                      ),
+                    );
+                  },
                 );
               },
             );
