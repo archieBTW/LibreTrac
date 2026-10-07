@@ -41,14 +41,14 @@ class GeminiAPI {
       _currentApiKey = apiKey;
       if (apiKey != null && apiKey.isNotEmpty) {
         _model = GenerativeModel(
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           apiKey: apiKey,
           generationConfig: GenerationConfig(
             responseMimeType: 'application/json',
           ),
         );
         _textModel = GenerativeModel(
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           apiKey: apiKey,
         );
       } else {
