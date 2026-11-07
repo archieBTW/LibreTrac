@@ -1,5 +1,6 @@
 import 'package:intl/intl.dart';
 import 'package:libretrac/core/database/app_database.dart';
+import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
 
 String formatDate(DateTime date) {
   return DateFormat('yyyy-MM-dd').format(date);
@@ -16,12 +17,18 @@ extension MoodEntryExport on MoodEntry {
 
 // SleepEntry
 extension SleepEntryExport on SleepEntry {
-  Map<String, dynamic> toExportJson() => {
-    'date': formatDate(date),
-    'hoursSlept': hoursSlept,
-    'quality': quality,
-    if (dreamJournal != null) 'dreamJournal': dreamJournal,
-  };
+  Map<String, dynamic> toExportJson() {
+    final dream = parsedDream;
+    return {
+      'date': formatDate(date),
+      'hoursSlept': hoursSlept,
+      'quality': quality,
+      if (dream.title != null) 'dreamTitle': dream.title,
+      if (dream.tags.isNotEmpty) 'dreamTags': dream.tags,
+      if (dream.clarity != null) 'dreamClarity': dream.clarity,
+      if (dream.text.isNotEmpty) 'dreamJournal': dream.text,
+    };
+  }
 }
 
 // ReactionResult

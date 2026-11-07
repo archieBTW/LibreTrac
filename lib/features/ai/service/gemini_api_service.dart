@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/core/database/extensions/extensions.dart';
+import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/services/prefs_service.dart';
 
 const _noApiKeyMessage = '''
@@ -26,29 +28,32 @@ That's it! AI features will work immediately.
 
 class GeminiAPI {
   GeminiAPI._();
-  
+
   static final instance = GeminiAPI._();
-  
+
   GenerativeModel? _model;
   GenerativeModel? _textModel;
   String? _currentApiKey;
+  String? _currentModelName;
 
   Future<void> _ensureInitialized() async {
     final apiKey = await PrefsService.getGeminiApiKey();
-    
-    // Reinitialize if API key changed
-    if (apiKey != _currentApiKey) {
+    final modelName = await PrefsService.getGeminiModel();
+
+    // Reinitialize if API key or model changed
+    if (apiKey != _currentApiKey || modelName != _currentModelName) {
       _currentApiKey = apiKey;
+      _currentModelName = modelName;
       if (apiKey != null && apiKey.isNotEmpty) {
         _model = GenerativeModel(
-          model: 'gemini-3.8-flash',
+          model: modelName,
           apiKey: apiKey,
           generationConfig: GenerationConfig(
             responseMimeType: 'application/json',
           ),
         );
         _textModel = GenerativeModel(
-          model: 'gemini-3.8-flash',
+          model: modelName,
           apiKey: apiKey,
         );
       } else {
@@ -64,7 +69,7 @@ class GeminiAPI {
     String? notes,
   }) async {
     await _ensureInitialized();
-    
+
     if (_model == null) {
       return _noApiKeyMessage;
     }
@@ -120,16 +125,21 @@ Give its benefits, cautions, ingredients (if compound), and ONLY include interac
 
   Future<String> analyzeTrends(TrendRequest req) async {
     await _ensureInitialized();
-    
+
     if (_textModel == null) {
       return _noApiKeyMessage;
     }
 
     final prompt = '''
-You are a data analyst specialised in mood, cognition, sleep and pharmacology.
-Analyse the JSON-encoded data and identify any correlations or concerning trends.
+You are a data analyst specialised in mood, cognition, sleep, dream psychology, and pharmacology.
+Analyse the JSON-encoded data and identify any correlations, patterns, or concerning trends across:
+- Mood metrics & notes
+- Sleep duration, quality, dream tags, dream recall clarity, and dream narratives
+- Cognitive test performance (Reaction Time, Stroop Δ, Go/No-Go, Digit Span, Symbol Search)
+- Active medications & supplements
+
 Refer to entries by date, not by ID.
-Respond in concise Markdown.
+Respond in concise, well-structured Markdown with clear headings.
 
 Here is the anonymised data:
 ${req.toPrettyJson()}
@@ -140,6 +150,166 @@ ${req.toPrettyJson()}
       return response.text?.trim() ?? 'No analysis available.';
     } catch (e) {
       return '⚠️ Error analyzing trends: $e';
+    }
+  }
+
+  /// Analyzes a single sleep & dream entry in context of recent mood and active stack.
+  Future<String> analyzeDreamEntry({
+    required SleepEntry entry,
+    List<MoodEntry> recentMoods = const [],
+    List<Substance> activeSubstances = const [],
+    List<SleepEntry> recentSleeps = const [],
+  }) async {
+    await _ensureInitialized();
+
+    if (_textModel == null) {
+      return _noApiKeyMessage;
+    }
+
+    final dreamInstructions = await PrefsService.getEffectiveDreamInstructions();
+
+    final payload = {
+      'targetSleepEntry': entry.toExportJson(),
+      if (recentSleeps.isNotEmpty)
+        'recentSleepHistory': recentSleeps.map((s) => s.toExportJson()).toList(),
+      if (recentMoods.isNotEmpty)
+        'recentMoodCheckIns': recentMoods.map((m) => m.toExportJson()).toList(),
+      if (activeSubstances.isNotEmpty)
+        'activeSubstances':
+            activeSubstances.map((s) => s.toExportJson()).toList(),
+    };
+
+    final prompt = '''
+You are an expert in sleep analysis, dream interpretation, and behavioral health.
+Analyze the user's `targetSleepEntry` (including hours slept, sleep quality, dream title, dream tags, recall clarity, and dream narrative) in the context of their recent mood check-ins, sleep history, and active supplements/medications.
+
+Dream Interpretation Lens & User Instructions:
+$dreamInstructions
+
+Structure your response in concise Markdown with:
+1. **🌙 Dream Interpretation & Themes**: Key imagery, themes, or patterns interpreted through the user's chosen lens above (or sleep quality reflection if no narrative was logged).
+2. **🔗 Sleep, Mood & Stack Connections**: How this night's sleep/dream relates to recent mood metrics, sleep debt, or active substances/supplements (e.g., compounds known to affect REM sleep or dream vividness).
+3. **💡 Takeaway & Reflection**: One brief, practical takeaway or reflective question aligned with the user's interpretation lens.
+
+Data:
+${const JsonEncoder.withIndent('  ').convert(payload)}
+''';
+
+    try {
+      final response = await _textModel!.generateContent([Content.text(prompt)]);
+      return response.text?.trim() ?? 'No dream analysis available.';
+    } catch (e) {
+      return '⚠️ Error analyzing dream entry: $e';
+    }
+  }
+
+  /// Continues a multi-turn follow-up chat about a specific sleep & dream entry.
+  Future<String> continueDreamChat({
+    required SleepEntry entry,
+    required List<DreamChatMessage> history,
+    required String userQuestion,
+    List<MoodEntry> recentMoods = const [],
+    List<Substance> activeSubstances = const [],
+    List<SleepEntry> recentSleeps = const [],
+  }) async {
+    await _ensureInitialized();
+
+    if (_textModel == null) {
+      return _noApiKeyMessage;
+    }
+
+    final dreamInstructions = await PrefsService.getEffectiveDreamInstructions();
+
+    final payload = {
+      'targetSleepEntry': entry.toExportJson(),
+      if (recentSleeps.isNotEmpty)
+        'recentSleepHistory': recentSleeps.map((s) => s.toExportJson()).toList(),
+      if (recentMoods.isNotEmpty)
+        'recentMoodCheckIns': recentMoods.map((m) => m.toExportJson()).toList(),
+      if (activeSubstances.isNotEmpty)
+        'activeSubstances':
+            activeSubstances.map((s) => s.toExportJson()).toList(),
+    };
+
+    final systemContext = '''
+You are an expert in sleep analysis, dream interpretation, and behavioral health assisting the user with a specific sleep & dream check-in.
+Use the user's sleep/dream entry, recent mood check-ins, sleep history, and active supplements/medications below to answer their follow-up questions thoughtfully and concisely in Markdown.
+
+Dream Interpretation Lens & User Instructions:
+$dreamInstructions
+
+Context Data:
+${const JsonEncoder.withIndent('  ').convert(payload)}
+''';
+
+    final contents = <Content>[
+      Content.text(systemContext),
+      Content.model([
+        TextPart(
+          'Understood. I have reviewed the sleep entry, dream journal, mood check-ins, and active stack.',
+        ),
+      ]),
+      for (final msg in history)
+        msg.isUser
+            ? Content.text(msg.text)
+            : Content.model([TextPart(msg.text)]),
+      Content.text(userQuestion),
+    ];
+
+    try {
+      final response = await _textModel!.generateContent(contents);
+      return response.text?.trim() ?? 'No response available.';
+    } catch (e) {
+      return '⚠️ Error getting follow-up response: $e';
+    }
+  }
+
+  /// Analyzes multi-night dream and sleep patterns across a time window.
+  Future<String> analyzeDreamAndSleepPatterns({
+    required List<SleepEntry> sleeps,
+    List<MoodEntry> moods = const [],
+    List<Substance> substances = const [],
+  }) async {
+    await _ensureInitialized();
+
+    if (_textModel == null) {
+      return _noApiKeyMessage;
+    }
+
+    final dreamInstructions = await PrefsService.getEffectiveDreamInstructions();
+
+    final payload = {
+      'sleepAndDreamEntries': sleeps.map((s) => s.toExportJson()).toList(),
+      if (moods.isNotEmpty)
+        'moodEntries': moods.map((m) => m.toExportJson()).toList(),
+      if (substances.isNotEmpty)
+        'substances': substances.map((s) => s.toExportJson()).toList(),
+    };
+
+    final prompt = '''
+You are a sleep researcher and dream analyst.
+Analyze the user's sleep and dream journal history alongside their mood check-ins and active substances.
+
+Dream Interpretation Lens & User Instructions:
+$dreamInstructions
+
+Provide a concise, insightful Markdown report covering:
+1. **📊 Sleep Architecture & Consistency**: Trends in hours slept, subjective sleep quality, and dream recall clarity.
+2. **💭 Recurring Dream Motifs & Tags**: Patterns in dream tags (e.g., Vivid, Lucid, Nightmare, Peaceful, Recurring) and narrative themes interpreted through the user's chosen lens.
+3. **🧠 Next-Day Mood & Pharmacology Links**: Correlations between sleep quality/dream types and mood metrics or supplements/medications.
+4. **✨ Recommendations**: 2–3 tailored suggestions for improving sleep quality or dream reflection.
+
+Refer to entries by date, not by ID.
+
+Data:
+${const JsonEncoder.withIndent('  ').convert(payload)}
+''';
+
+    try {
+      final response = await _textModel!.generateContent([Content.text(prompt)]);
+      return response.text?.trim() ?? 'No sleep pattern analysis available.';
+    } catch (e) {
+      return '⚠️ Error analyzing sleep patterns: $e';
     }
   }
 }
@@ -155,6 +325,7 @@ class TrendRequest {
     required this.symbolSearch,
     required this.substances,
     required this.sleeps,
+    this.medicationLogs = const [],
   });
 
   final DateTime since;
@@ -166,6 +337,7 @@ class TrendRequest {
   final List<SymbolSearchResult> symbolSearch;
   final List<Substance> substances;
   final List<SleepEntry> sleeps;
+  final List<MedicationDoseLog> medicationLogs;
 
   Map<String, dynamic> toMap() => {
     'since': since.toIso8601String(),
@@ -176,6 +348,7 @@ class TrendRequest {
     'digitSpanResults': digitSpan.map((d) => d.toExportJson()).toList(),
     'symbolSearchResults': symbolSearch.map((s) => s.toExportJson()).toList(),
     'substances': substances.map((s) => s.toExportJson()).toList(),
+    'medicationDoseLogs': medicationLogs.map((l) => l.toExportJson()).toList(),
     'sleeps': sleeps.map((s) => s.toExportJson()).toList(),
   };
 

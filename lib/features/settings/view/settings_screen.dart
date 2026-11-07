@@ -6,6 +6,8 @@ import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/providers/db_provider.dart';
 import 'package:libretrac/providers/theme_provider.dart';
 import 'package:libretrac/services/prefs_service.dart';
@@ -23,6 +25,28 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool expanded = false;
+  String _selectedModel = PrefsService.defaultGeminiModel;
+  String _dreamLensPreset = PrefsService.defaultDreamLens;
+  String _dreamCustomInstructions = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadModelPref();
+  }
+
+  Future<void> _loadModelPref() async {
+    final model = await PrefsService.getGeminiModel();
+    final lens = await PrefsService.getDreamLensPreset();
+    final custom = await PrefsService.getDreamCustomInstructions();
+    if (mounted) {
+      setState(() {
+        _selectedModel = model;
+        _dreamLensPreset = lens;
+        _dreamCustomInstructions = custom;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -91,6 +115,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             subtitle: const Text('Required for AI features'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _showApiKeyDialog(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('Gemini Model'),
+            subtitle: Text(PrefsService.labelForModel(_selectedModel)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _showModelSelectionDialog(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.auto_fix_high_outlined),
+            title: const Text('Dream Interpretation Lens'),
+            subtitle: Text(
+              PrefsService.labelForDreamLens(
+                _dreamLensPreset,
+                customText: _dreamCustomInstructions,
+              ),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () async {
+              final changed = await showDreamLensDialog(context);
+              if (changed) {
+                await _loadModelPref();
+              }
+            },
           ),
           const Divider(),
           ListTile(
@@ -275,6 +323,82 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Future<void> _showModelSelectionDialog(BuildContext ctx) async {
+    String selectedOption = await PrefsService.getGeminiModel();
+
+    if (!ctx.mounted) return;
+    final chosen = await showDialog<String?>(
+      context: ctx,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Select Gemini Model'),
+              content: SizedBox(
+                width: 360,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Choose which Gemini model powers AI trend analysis, dream interpretation, and substance insights.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                      const SizedBox(height: 12),
+                      for (final option in kGeminiModelOptions)
+                        RadioListTile<String>(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: option.id,
+                          groupValue: selectedOption,
+                          title: Text(
+                            option.label,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${option.id} · ${option.description}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          onChanged: (val) {
+                            if (val != null) {
+                              setDialogState(() => selectedOption = val);
+                            }
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(dialogCtx, selectedOption),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (chosen != null && chosen.isNotEmpty) {
+      await PrefsService.setGeminiModel(chosen);
+      if (mounted) {
+        setState(() => _selectedModel = chosen);
+      }
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('Gemini model set to $chosen')),
+        );
+      }
+    }
+  }
+
   Future<void> _exportEverything(BuildContext ctx, WidgetRef ref) async {
     final db = ref.read(dbProvider);
     final dbJson = await db.exportData();
@@ -415,6 +539,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref.read(userProfileProvider.notifier).reload();
       await ref.read(themeModeProvider.notifier).reload();
       await ref.read(accentColorProvider.notifier).reload();
+      await ref.read(medicationDoseLogsProvider.notifier).reload();
+      await _loadModelPref();
 
       // Force refresh of home screen data
       ref.invalidate(filteredMoodEntriesProvider);

@@ -17,153 +17,431 @@ class DigitSpanTestScreen extends ConsumerStatefulWidget {
 }
 
 class _DigitSpanTestScreenState extends ConsumerState<DigitSpanTestScreen> {
-  // ── Config ───────────────────────────────────────────────────
   final _rand = Random();
   int _span = 3; // starting length
   int _bestSpan = 0;
+  int _mistakesAtCurrentSpan = 0; // 2 attempts per span level
 
-  // ── Runtime ──────────────────────────────────────────────────
-  late List<int> _sequence;
-  bool _showSeq = true;
+  List<int> _sequence = [];
+  bool _presenting = true;
+  int? _currentDigit; // null during brief inter-digit gap
+  int _presentingIndex = 0;
   String _userInput = '';
-  Timer? _hideTimer;
+  String? _statusBanner;
+  bool? _lastCorrect;
+  Timer? _stepTimer;
 
-  // ── Flow helpers ─────────────────────────────────────────────
-  void _showInstructions() {
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() => _showInstructions(initial: true));
+  }
+
+  @override
+  void dispose() {
+    _stepTimer?.cancel();
+    super.dispose();
+  }
+
+  void _showInstructions({bool initial = false}) {
+    _stepTimer?.cancel();
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
+          (dialogCtx) => AlertDialog(
             title: const Text('Digit Span Instructions'),
             content: const Text(
-              'A sequence of numbers will flash on the screen.\n\n'
-              'When they disappear, type the sequence in the same order.\n'
-              'Each time you succeed, the sequence gets longer by 1 digit.\n'
-              'The test ends after your first mistake.\n\n'
-              'Tap “Start” when you’re ready.',
+              'Digits will appear one at a time in the center of the screen.\n\n'
+              'Memorize the sequence in order. Once all digits have been shown, enter them using the keypad.\n\n'
+              '• Each level adds 1 more digit.\n'
+              '• You get 2 chances at each length before the test ends.',
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Start'),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: Text(initial ? 'Start' : 'Resume'),
               ),
             ],
           ),
-    ).then((_) => _nextRound());
-  }
-
-  void _nextRound() {
-    _sequence = List.generate(_span, (_) => _rand.nextInt(10));
-    _showSeq = true;
-    _userInput = '';
-    setState(() {});
-
-    _hideTimer?.cancel();
-    _hideTimer = Timer(Duration(seconds: _span + 1), () {
-      setState(() => _showSeq = false);
+    ).then((_) {
+      if (!mounted) return;
+      if (initial || _sequence.isEmpty) {
+        _nextRound();
+      } else if (_presenting) {
+        _startSequentialPresentation();
+      }
     });
   }
 
-  void _submit() {
-    if (_userInput.length != _span) return;
+  List<int> _generateSequence(int length) {
+    final seq = <int>[];
+    for (int i = 0; i < length; i++) {
+      int next = _rand.nextInt(10);
+      // Avoid 3 identical digits in a row
+      if (i >= 2 && seq[i - 1] == next && seq[i - 2] == next) {
+        next = (next + 1 + _rand.nextInt(9)) % 10;
+      }
+      seq.add(next);
+    }
+    return seq;
+  }
 
-    final isCorrect = listEquals(
-      _userInput.split('').map(int.parse).toList(),
-      _sequence,
-    );
+  void _nextRound() {
+    _stepTimer?.cancel();
+    _sequence = _generateSequence(_span);
+    _userInput = '';
+    _statusBanner = null;
+    _lastCorrect = null;
+    _startSequentialPresentation();
+  }
+
+  void _startSequentialPresentation() {
+    _stepTimer?.cancel();
+    _presenting = true;
+    _presentingIndex = 0;
+    _currentDigit = null;
+    setState(() {});
+
+    // Brief 400ms pause before first digit
+    _stepTimer = Timer(const Duration(milliseconds: 400), _showNextDigitStep);
+  }
+
+  void _showNextDigitStep() {
+    if (!mounted) return;
+    if (_presentingIndex >= _sequence.length) {
+      setState(() {
+        _presenting = false;
+        _currentDigit = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _currentDigit = _sequence[_presentingIndex];
+    });
+
+    // Show digit for 750ms, then 200ms blank gap so duplicate consecutive digits clearly blink
+    _stepTimer = Timer(const Duration(milliseconds: 750), () {
+      if (!mounted) return;
+      setState(() {
+        _currentDigit = null;
+      });
+      _presentingIndex++;
+      _stepTimer = Timer(
+        const Duration(milliseconds: 200),
+        _showNextDigitStep,
+      );
+    });
+  }
+
+  void _onKeyTap(String key) {
+    if (_presenting || _statusBanner != null) return;
+    if (key == 'BACK') {
+      if (_userInput.isNotEmpty) {
+        setState(() {
+          _userInput = _userInput.substring(0, _userInput.length - 1);
+        });
+      }
+      return;
+    }
+
+    if (_userInput.length < _span) {
+      setState(() {
+        _userInput += key;
+      });
+      if (_userInput.length == _span) {
+        _submit();
+      }
+    }
+  }
+
+  void _submit() {
+    if (_userInput.length != _span || _presenting) return;
+
+    final entered = _userInput.split('').map(int.parse).toList();
+    final isCorrect = listEquals(entered, _sequence);
 
     if (isCorrect) {
       _bestSpan = max(_bestSpan, _span);
+      _mistakesAtCurrentSpan = 0;
+      setState(() {
+        _lastCorrect = true;
+        _statusBanner = '✓ Correct! Advancing to ${_span + 1} digits…';
+      });
       _span++;
-      _nextRound();
+      _stepTimer = Timer(const Duration(milliseconds: 900), _nextRound);
     } else {
-      _endTest();
+      _mistakesAtCurrentSpan++;
+      if (_mistakesAtCurrentSpan < 2) {
+        setState(() {
+          _lastCorrect = false;
+          _statusBanner =
+              '✗ Sequence was ${_sequence.join(' ')} · 1 retry left at $_span digits';
+        });
+        _stepTimer = Timer(const Duration(milliseconds: 1400), _nextRound);
+      } else {
+        setState(() {
+          _lastCorrect = false;
+          _statusBanner = '✗ Sequence was ${_sequence.join(' ')}';
+        });
+        _stepTimer = Timer(const Duration(milliseconds: 900), _endTest);
+      }
     }
   }
 
   Future<void> _endTest() async {
-    // 1. Persist result
+    _stepTimer?.cancel();
     final db = ref.read(dbProvider);
     await db
         .into(db.digitSpanResults)
         .insert(DigitSpanResultsCompanion.insert(bestSpan: _bestSpan));
 
-    // 2. Show summary dialog
     if (!mounted) return;
     await showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
+          (dialogCtx) => AlertDialog(
             title: const Text('Digit Span Complete'),
-            content: Text('Best span: $_bestSpan digits'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Best Span: $_bestSpan digits',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text('Reached Level: $_span digits'),
+              ],
+            ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK'),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Done'),
               ),
             ],
           ),
     );
 
-    if (mounted) Navigator.pop(context); // leave screen
-  }
-
-  // ── Lifecycle ────────────────────────────────────────────────
-  @override
-  void initState() {
-    super.initState();
-    // show instructions on first frame
-    Future.microtask(_showInstructions);
+    if (mounted) Navigator.pop(context);
   }
 
   @override
-  void dispose() {
-    _hideTimer?.cancel();
-    super.dispose();
-  }
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
 
-  // ── UI ───────────────────────────────────────────────────────
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Digit Span'),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.info_outline),
-          tooltip: 'Instructions',
-          onPressed: _showInstructions,
-        ),
-      ],
-    ),
-    body: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (_showSeq)
-            Text(
-              _sequence.join(' '),
-              style: const TextStyle(fontSize: 32, letterSpacing: 4),
-            )
-          else
-            Column(
-              children: [
-                TextField(
-                  autofocus: true,
-                  decoration: const InputDecoration(hintText: 'Enter sequence'),
-                  keyboardType: TextInputType.number,
-                  onChanged: (v) => _userInput = v,
-                  onSubmitted: (_) => _submit(),
-                ),
-                const SizedBox(height: 12),
-                ElevatedButton(onPressed: _submit, child: const Text('OK')),
-              ],
-            ),
-          const SizedBox(height: 24),
-          Text('Current span: $_span   •   Best so far: $_bestSpan'),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Digit Span'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            tooltip: 'Instructions',
+            onPressed: () => _showInstructions(initial: false),
+          ),
         ],
       ),
-    ),
-  );
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              // Header stats
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Chip(
+                    avatar: const Icon(Icons.linear_scale, size: 16),
+                    label: Text('Length: $_span digits'),
+                  ),
+                  Chip(
+                    avatar: const Icon(Icons.emoji_events_outlined, size: 16),
+                    label: Text('Best: $_bestSpan'),
+                  ),
+                  Row(
+                    children: [
+                      for (int i = 0; i < 2; i++)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4),
+                          child: Icon(
+                            i < (2 - _mistakesAtCurrentSpan)
+                                ? Icons.favorite
+                                : Icons.favorite_border,
+                            size: 18,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+              const Spacer(),
+
+              if (_presenting) ...[
+                Text(
+                  'Watch carefully (${min(_presentingIndex + 1, _sequence.length)} / $_span)',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: Colors.grey,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: 140,
+                  height: 140,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.4),
+                      width: 2,
+                    ),
+                  ),
+                  child: Text(
+                    _currentDigit != null ? '$_currentDigit' : '',
+                    style: TextStyle(
+                      fontSize: 64,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ] else ...[
+                Text(
+                  _statusBanner ?? 'Enter the $_span-digit sequence in order:',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color:
+                        _lastCorrect == null
+                            ? theme.colorScheme.onSurface
+                            : (_lastCorrect! ? Colors.green : Colors.redAccent),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Input slot boxes
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    for (int i = 0; i < _span; i++)
+                      Container(
+                        width: 42,
+                        height: 52,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color:
+                              i < _userInput.length
+                                  ? theme.colorScheme.primaryContainer
+                                  : theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color:
+                                i == _userInput.length
+                                    ? theme.colorScheme.primary
+                                    : Colors.transparent,
+                            width: 2,
+                          ),
+                        ),
+                        child: Text(
+                          i < _userInput.length ? _userInput[i] : '',
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+
+              const Spacer(),
+
+              // On-screen numeric keypad
+              IgnorePointer(
+                ignoring: _presenting || _statusBanner != null,
+                child: Opacity(
+                  opacity: (_presenting || _statusBanner != null) ? 0.35 : 1.0,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 340),
+                    child: GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 3,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10,
+                      childAspectRatio: 1.8,
+                      children: [
+                        for (final d in [
+                          '1',
+                          '2',
+                          '3',
+                          '4',
+                          '5',
+                          '6',
+                          '7',
+                          '8',
+                          '9',
+                        ])
+                          _KeypadButton(
+                            label: d,
+                            onTap: () => _onKeyTap(d),
+                          ),
+                        const SizedBox.shrink(),
+                        _KeypadButton(
+                          label: '0',
+                          onTap: () => _onKeyTap('0'),
+                        ),
+                        _KeypadButton(
+                          icon: Icons.backspace_outlined,
+                          onTap: () => _onKeyTap('BACK'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _KeypadButton extends StatelessWidget {
+  const _KeypadButton({this.label, this.icon, required this.onTap});
+
+  final String? label;
+  final IconData? icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton(
+      onPressed: onTap,
+      style: ElevatedButton.styleFrom(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        padding: EdgeInsets.zero,
+      ),
+      child:
+          icon != null
+              ? Icon(icon, size: 22)
+              : Text(
+                label!,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+    );
+  }
 }

@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:libretrac/core/database/app_database.dart';
@@ -32,6 +33,11 @@ class SingleMetricLine extends StatelessWidget {
         FlSpot(i.toDouble(), getY(ordered[i])),
     ];
 
+    final isSingle = ordered.length == 1;
+    final double minX = isSingle ? -0.5 : 0;
+    final double maxX =
+        isSingle ? 0.5 : max(1.0, (ordered.length - 1).toDouble());
+
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: Padding(
@@ -44,23 +50,46 @@ class SingleMetricLine extends StatelessWidget {
               child: LineChart(
                 LineChartData(
                   lineTouchData: LineTouchData(
-                    enabled: false, // <- disables built-in touch handling
+                    enabled: false,
                     handleBuiltInTouches: false,
                   ),
-                  minX: 0,
-                  maxX: (ordered.length - 1).toDouble(),
+                  minX: minX,
+                  maxX: maxX,
                   minY: minY,
                   maxY: maxY,
                   gridData: FlGridData(show: true),
+                  extraLinesData: ExtraLinesData(
+                    horizontalLines:
+                        isSingle
+                            ? [
+                              HorizontalLine(
+                                y: getY(ordered.first),
+                                color: color.withValues(alpha: 0.35),
+                                strokeWidth: 1.5,
+                                dashArray: [6, 4],
+                              ),
+                            ]
+                            : const [],
+                  ),
                   lineBarsData: [
-                    LineChartBarData(
-                      spots: spots,
-                      isCurved: true,
-                      barWidth: 3,
-                      color: color,
-                      dotData: FlDotData(show: false),
-                      belowBarData: BarAreaData(show: false),
-                    ),
+                    if (spots.isNotEmpty)
+                      LineChartBarData(
+                        spots: spots,
+                        isCurved: true,
+                        barWidth: 3,
+                        color: color,
+                        dotData: FlDotData(
+                          show: isSingle || spots.length <= 7,
+                          getDotPainter: (spot, percent, barData, index) =>
+                              FlDotCirclePainter(
+                                radius: isSingle ? 5.5 : 3.0,
+                                color: color,
+                                strokeWidth: isSingle ? 2.0 : 1.0,
+                                strokeColor: Colors.white,
+                              ),
+                        ),
+                        belowBarData: BarAreaData(show: false),
+                      ),
                   ],
                   titlesData: FlTitlesData(
                     topTitles: AxisTitles(
@@ -85,9 +114,13 @@ class SingleMetricLine extends StatelessWidget {
                         showTitles: true,
                         interval: 1,
                         getTitlesWidget: (value, _) {
-                          final i = value.toInt();
-                          if (i < 0 || i >= ordered.length)
+                          if ((value - value.roundToDouble()).abs() > 0.01) {
                             return const SizedBox.shrink();
+                          }
+                          final i = value.round();
+                          if (i < 0 || i >= ordered.length) {
+                            return const SizedBox.shrink();
+                          }
                           final d = ordered[i].date;
                           return Text(
                             '${d.month}/${d.day}',

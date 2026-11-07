@@ -12,6 +12,7 @@ import 'package:libretrac/features/cognitive/view/symbol_search_test.dart';
 import 'package:libretrac/features/home/view/main_drawer.dart';
 import 'package:libretrac/features/mood_sleep/view/mood_sleep_carousel.dart';
 import 'package:libretrac/features/mood_sleep/view/sleep_checkin_dialog.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:showcaseview/showcaseview.dart';
 import '../../../core/database/app_database.dart';
@@ -268,6 +269,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     );
                   },
                 ),
+                ListTile(
+                  leading: const Icon(Icons.medication_outlined),
+                  title: const Text('Medication Check-In'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const MedicationTrackerScreen(),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -501,16 +514,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               children: [
                                 Expanded(
                                   child: ElevatedButton.icon(
-                                    icon: const Icon(Icons.edit),
-                                    label: const Text('Check-In'),
+                                    style: ElevatedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.edit, size: 18),
+                                    label: const FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        'Check-In',
+                                        maxLines: 1,
+                                        softWrap: false,
+                                      ),
+                                    ),
                                     onPressed: _showCheckInSheet,
                                   ),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: ElevatedButton.icon(
-                                    icon: const Icon(Icons.flash_on),
-                                    label: const Text('Cognitive Tests'),
+                                    style: ElevatedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.flash_on, size: 18),
+                                    label: const FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        'Cognitive Tests',
+                                        maxLines: 1,
+                                        softWrap: false,
+                                      ),
+                                    ),
                                     onPressed: _showCognitiveSheet,
                                   ),
                                 ),

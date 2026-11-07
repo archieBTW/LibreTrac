@@ -14,51 +14,63 @@ class SymbolSearchScreen extends ConsumerStatefulWidget {
 }
 
 class _SymbolSearchScreenState extends ConsumerState<SymbolSearchScreen> {
-  // ── Config ───────────────────────────────────────────────────
-  static const _symbols = ['△', '□', '○', '◇', '☆', '♢'];
+  // 8 visually distinct geometric symbols (no duplicate diamonds)
+  static const _symbols = ['△', '□', '○', '☆', '◇', '✚', '⬡', '▽'];
   final _rand = Random();
-  final int _trials = 20;
+  static const int _trials = 20;
 
-  // ── Runtime ──────────────────────────────────────────────────
   late String _target;
   late List<String> _row;
   int _trial = 0;
   int _hits = 0;
-  final List<int> _rts = [];
-  late Stopwatch _sw;
+  final List<double> _rts = [];
+  final Stopwatch _sw = Stopwatch();
   bool _showIntro = true;
+  bool _inputLocked = false;
+  int? _tappedIndex;
+  bool? _tappedCorrect;
+  Timer? _nextTimer;
 
-  // ── Instructions ─────────────────────────────────────────────
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(_showInstructions);
+  }
+
+  @override
+  void dispose() {
+    _nextTimer?.cancel();
+    super.dispose();
+  }
+
   void _showInstructions() {
     showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
+          (dialogCtx) => AlertDialog(
             title: const Text('Symbol Search Instructions'),
             content: const Text(
-              'A “target” symbol appears at the top.\n'
-              'Below it, six symbols are shown in a grid.\n\n'
-              'Tap the grid **as fast as you can** on the cell that matches the target.\n'
-              'There are 20 trials total.\n',
+              'A target symbol appears in the top card.\n\n'
+              'Below it, six distinct symbols are shown in a 3×2 grid.\n\n'
+              'Tap the cell that matches the target symbol as quickly and accurately as you can across 20 trials.',
             ),
             actions: [
-              TextButton(
+              ElevatedButton(
                 onPressed: () {
-                  Navigator.pop(context);
+                  Navigator.pop(dialogCtx);
                   if (_showIntro) {
                     setState(() => _showIntro = false);
                     _startTest();
                   }
                 },
-                child: const Text('Start'),
+                child: Text(_showIntro ? 'Start' : 'Resume'),
               ),
             ],
           ),
     );
   }
 
-  // ── Test flow ────────────────────────────────────────────────
   void _startTest() {
     _hits = 0;
     _trial = 0;
@@ -67,85 +79,115 @@ class _SymbolSearchScreenState extends ConsumerState<SymbolSearchScreen> {
   }
 
   void _next() {
+    if (!mounted) return;
     if (_trial >= _trials) {
       _end();
       return;
     }
 
-    _target = _symbols[_rand.nextInt(_symbols.length)];
-    _row = List.generate(6, (_) => _symbols[_rand.nextInt(_symbols.length)]);
-    if (!_row.contains(_target)) {
-      _row[_rand.nextInt(6)] = _target;
-    }
+    // Pick 1 target and 5 unique distractors so every grid has exactly 1 match
+    final pool = [..._symbols]..shuffle(_rand);
+    _target = pool.first;
+    _row = pool.take(6).toList()..shuffle(_rand);
 
-    _sw = Stopwatch()..start();
+    _tappedIndex = null;
+    _tappedCorrect = null;
+    _inputLocked = false;
     setState(() {});
+
+    _sw
+      ..reset()
+      ..start();
   }
 
   void _tap(int index) {
+    if (_inputLocked) return;
     _sw.stop();
-    final rt = _sw.elapsedMilliseconds;
-    if (_row[index] == _target) {
+    _inputLocked = true;
+
+    final rt = _sw.elapsedMicroseconds / 1000.0;
+    final isHit = _row[index] == _target;
+
+    if (isHit) {
       _hits++;
       _rts.add(rt);
     }
+
+    setState(() {
+      _tappedIndex = index;
+      _tappedCorrect = isHit;
+    });
+
     _trial++;
-    _next();
+    _nextTimer?.cancel();
+    _nextTimer = Timer(
+      Duration(milliseconds: isHit ? 180 : 350),
+      _next,
+    );
   }
 
-  // ── Finish & persist ────────────────────────────────────────
   Future<void> _end() async {
     final meanRT =
-        _rts.isEmpty ? 0 : _rts.reduce((a, b) => a + b) ~/ _rts.length;
+        _rts.isEmpty
+            ? 0.0
+            : _rts.reduce((a, b) => a + b) / _rts.length;
+    final accuracy = (_hits / _trials) * 100;
 
-    // 1. Save to DB
     final db = ref.read(dbProvider);
-    await db
-        .into(db.symbolSearchResults)
-        .insert(
-          SymbolSearchResultsCompanion.insert(
-            hits: _hits,
-            total: _trials,
-            meanRt: meanRT.toDouble(),
-          ),
-        );
+    await db.into(db.symbolSearchResults).insert(
+      SymbolSearchResultsCompanion.insert(
+        hits: _hits,
+        total: _trials,
+        meanRt: meanRT,
+      ),
+    );
 
-    // 2. Show summary
     if (!mounted) return;
     await showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
+          (dialogCtx) => AlertDialog(
             title: const Text('Symbol Search Complete'),
-            content: Text('Hits: $_hits / $_trials\nMean RT: ${meanRT} ms'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Mean RT (Hits): ${meanRT.toStringAsFixed(0)} ms',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Accuracy: ${accuracy.toStringAsFixed(0)}% ($_hits / $_trials)',
+                ),
+              ],
+            ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK'),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Done'),
               ),
             ],
           ),
     );
 
-    if (mounted) Navigator.pop(context); // back to previous screen
+    if (mounted) Navigator.pop(context);
   }
 
-  // ── Lifecycle ────────────────────────────────────────────────
-  @override
-  void initState() {
-    super.initState();
-    Future.microtask(_showInstructions);
-  }
-
-  // ── UI ───────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     if (_showIntro) {
       return Scaffold(
         appBar: AppBar(title: const Text('Symbol Search')),
-        body: const SizedBox.shrink(), // intro handled by dialog
+        body: const SizedBox.shrink(),
       );
     }
+
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -158,30 +200,111 @@ class _SymbolSearchScreenState extends ConsumerState<SymbolSearchScreen> {
         ],
       ),
       body: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 16),
+        padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            Text(
-              'Find this symbol →  $_target',
-              style: const TextStyle(fontSize: 24),
+            LinearProgressIndicator(
+              value: (_trial / _trials).clamp(0.0, 1.0),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Trial ${min(_trial + 1, _trials)} / $_trials',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  'Hits: $_hits / $_trial',
+                  style: const TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Target card
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primaryContainer.withValues(
+                  alpha: 0.4,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.5),
+                  width: 2,
+                ),
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    'TARGET SYMBOL',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _target,
+                    style: const TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 32),
             Expanded(
-              child: GridView.builder(
-                itemCount: 6,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: 6,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          mainAxisSpacing: 14,
+                          crossAxisSpacing: 14,
+                          childAspectRatio: 1.15,
+                        ),
+                    itemBuilder: (_, i) {
+                      final isSelected = _tappedIndex == i;
+                      Color? bgColor;
+                      if (isSelected) {
+                        bgColor =
+                            _tappedCorrect == true
+                                ? Colors.green.withValues(alpha: 0.35)
+                                : Colors.red.withValues(alpha: 0.35);
+                      }
+
+                      return ElevatedButton(
+                        onPressed: () => _tap(i),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: bgColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(
+                          _row[i],
+                          style: const TextStyle(
+                            fontSize: 36,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                 ),
-                itemBuilder:
-                    (_, i) => ElevatedButton(
-                      onPressed: () => _tap(i),
-                      child: Text(
-                        _row[i],
-                        style: const TextStyle(fontSize: 32),
-                      ),
-                    ),
               ),
             ),
           ],

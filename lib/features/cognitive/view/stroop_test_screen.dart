@@ -6,6 +6,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
+class _StroopTrial {
+  final String word;
+  final String inkColorName;
+  final Color inkColor;
+  final bool isCongruent;
+
+  const _StroopTrial({
+    required this.word,
+    required this.inkColorName,
+    required this.inkColor,
+    required this.isCongruent,
+  });
+}
+
 class StroopTestScreen extends ConsumerStatefulWidget {
   const StroopTestScreen({super.key});
 
@@ -14,17 +28,15 @@ class StroopTestScreen extends ConsumerStatefulWidget {
 }
 
 class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
-  // ── Config ───────────────────────────────────────────────────
   static const int totalRounds = 20;
-  final List<String> _colorWords = ['Red', 'Green', 'Blue', 'Yellow'];
-  final Map<String, Color> _colorMap = {
-    'Red': Colors.red,
-    'Green': Colors.green,
-    'Blue': Colors.blue,
-    'Yellow': Colors.yellow,
+  static const List<String> _colorWords = ['Red', 'Green', 'Blue', 'Yellow'];
+  static const Map<String, Color> _colorMap = {
+    'Red': Color(0xFFEF4444),
+    'Green': Color(0xFF22C55E),
+    'Blue': Color(0xFF3B82F6),
+    'Yellow': Color(0xFFFACC15),
   };
 
-  // ── Runtime ──────────────────────────────────────────────────
   bool _showIntro = true;
   int _currentRound = 0;
   int _correct = 0;
@@ -32,55 +44,114 @@ class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
 
   final List<double> _congruentRTs = [];
   final List<double> _incongruentRTs = [];
+  final List<double> _allCongruentRTs = [];
+  final List<double> _allIncongruentRTs = [];
 
-  late Stopwatch _sw;
-  late String _currentWord;
-  late Color _currentColor;
-  late bool _isCongruent;
-  bool _awaitingResponse = true;
+  late List<_StroopTrial> _trials;
+  late _StroopTrial _currentTrial;
+  final Stopwatch _sw = Stopwatch();
+  bool _awaitingResponse = false;
+  String? _feedbackText;
+  bool? _lastWasCorrect;
+  Timer? _nextTimer;
 
-  // ── Helpers ──────────────────────────────────────────────────
-  void _showInstructions() => showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder:
-        (_) => AlertDialog(
-          title: const Text('Stroop Instructions'),
-          content: const Text(
-            'You’ll see a color WORD in a colored font.\n'
-            'Tap the button that matches the **FONT COLOR**, not the word.\n'
-            'React quickly but avoid mistakes.\n',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                if (_showIntro) {
-                  setState(() => _showIntro = false);
-                  _nextRound();
-                }
-              },
-              child: const Text('Start'),
-            ),
-          ],
+  @override
+  void initState() {
+    super.initState();
+    _generateBalancedTrials();
+    Future.microtask(_showInstructions);
+  }
+
+  @override
+  void dispose() {
+    _nextTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Generates a balanced 50/50 split of congruent (10) and incongruent (10) trials
+  /// and avoids consecutive identical trials.
+  void _generateBalancedTrials() {
+    final rand = Random();
+    final deck = <_StroopTrial>[];
+
+    // 10 congruent trials
+    for (int i = 0; i < totalRounds ~/ 2; i++) {
+      final word = _colorWords[rand.nextInt(_colorWords.length)];
+      deck.add(
+        _StroopTrial(
+          word: word,
+          inkColorName: word,
+          inkColor: _colorMap[word]!,
+          isCongruent: true,
         ),
-  );
+      );
+    }
+
+    // 10 incongruent trials
+    for (int i = 0; i < totalRounds - (totalRounds ~/ 2); i++) {
+      final word = _colorWords[rand.nextInt(_colorWords.length)];
+      final otherColors = _colorWords.where((c) => c != word).toList();
+      final ink = otherColors[rand.nextInt(otherColors.length)];
+      deck.add(
+        _StroopTrial(
+          word: word,
+          inkColorName: ink,
+          inkColor: _colorMap[ink]!,
+          isCongruent: false,
+        ),
+      );
+    }
+
+    deck.shuffle(rand);
+    _trials = deck;
+  }
+
+  void _showInstructions() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (dialogCtx) => AlertDialog(
+            title: const Text('Stroop Test Instructions'),
+            content: const Text(
+              'You will see a color WORD displayed in a colored font.\n\n'
+              'Tap the button that matches the FONT COLOR (ink color), ignoring what the word says.\n\n'
+              'React as quickly and accurately as you can across 20 rounds.',
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(dialogCtx);
+                  if (_showIntro) {
+                    setState(() => _showIntro = false);
+                    _nextRound();
+                  }
+                },
+                child: Text(_showIntro ? 'Start' : 'Resume'),
+              ),
+            ],
+          ),
+    );
+  }
 
   void _nextRound() {
+    if (!mounted) return;
     if (_currentRound >= totalRounds) {
       _endTest();
       return;
     }
 
-    final rand = Random();
-    _currentWord = _colorWords[rand.nextInt(_colorWords.length)];
-    _currentColor = _colorMap[_colorWords[rand.nextInt(_colorWords.length)]]!;
-    _isCongruent = _colorMap[_currentWord] == _currentColor;
+    setState(() {
+      _currentTrial = _trials[_currentRound];
+      _currentRound++;
+      _feedbackText = null;
+      _lastWasCorrect = null;
+      _awaitingResponse = true;
+    });
 
-    _currentRound++;
-    _awaitingResponse = true;
-    _sw = Stopwatch()..start();
-    setState(() {});
+    _sw
+      ..reset()
+      ..start();
   }
 
   void _handleAnswer(String chosenColor) {
@@ -88,63 +159,83 @@ class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
     _sw.stop();
     _awaitingResponse = false;
 
-    final correctColorName =
-        _colorMap.entries.firstWhere((e) => e.value == _currentColor).key;
+    final rt = _sw.elapsedMicroseconds / 1000.0;
+    final isCorrect = chosenColor == _currentTrial.inkColorName;
 
-    final rt = _sw.elapsedMilliseconds.toDouble();
-    if (_isCongruent) {
-      _congruentRTs.add(rt);
+    if (_currentTrial.isCongruent) {
+      _allCongruentRTs.add(rt);
+      if (isCorrect) _congruentRTs.add(rt);
     } else {
-      _incongruentRTs.add(rt);
+      _allIncongruentRTs.add(rt);
+      if (isCorrect) _incongruentRTs.add(rt);
     }
 
-    if (chosenColor == correctColorName) {
-      _correct++;
-    } else {
-      _incorrect++;
-    }
+    setState(() {
+      if (isCorrect) {
+        _correct++;
+        _lastWasCorrect = true;
+        _feedbackText = '✓ ${rt.toStringAsFixed(0)} ms';
+      } else {
+        _incorrect++;
+        _lastWasCorrect = false;
+        _feedbackText = '✗ Was ${_currentTrial.inkColorName}';
+      }
+    });
 
-    Future.delayed(const Duration(milliseconds: 400), _nextRound);
+    _nextTimer?.cancel();
+    _nextTimer = Timer(const Duration(milliseconds: 350), _nextRound);
+  }
+
+  double _mean(List<double> primary, List<double> fallback) {
+    final list = primary.isNotEmpty ? primary : fallback;
+    if (list.isEmpty) return 0.0;
+    return list.reduce((a, b) => a + b) / list.length;
   }
 
   Future<void> _endTest() async {
-    final avgCong =
-        _congruentRTs.isEmpty
-            ? 0
-            : _congruentRTs.reduce((a, b) => a + b) / _congruentRTs.length;
-    final avgIncong =
-        _incongruentRTs.isEmpty
-            ? 0
-            : _incongruentRTs.reduce((a, b) => a + b) / _incongruentRTs.length;
+    final avgCong = _mean(_congruentRTs, _allCongruentRTs);
+    final avgIncong = _mean(_incongruentRTs, _allIncongruentRTs);
     final delta = avgIncong - avgCong;
+    final accuracy = (_correct / totalRounds) * 100;
 
-    // ── Persist
     final db = ref.read(dbProvider);
-    await db
-        .into(db.stroopResults)
-        .insert(
-          StroopResultsCompanion.insert(
-            congruentMs: avgCong as double,
-            incongruentMs: avgIncong as double,
-            deltaMs: delta as double,
-          ),
-        );
+    await db.into(db.stroopResults).insert(
+      StroopResultsCompanion.insert(
+        congruentMs: avgCong,
+        incongruentMs: avgIncong,
+        deltaMs: delta,
+      ),
+    );
 
     if (!mounted) return;
     await showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
-            title: const Text('Stroop Complete'),
-            content: Text(
-              'Correct: $_correct  |  Incorrect: $_incorrect\n'
-              'Avg congruent RT: ${avgCong.toStringAsFixed(1)} ms\n'
-              'Avg incongruent RT: ${avgIncong.toStringAsFixed(1)} ms\n'
-              'Δ (incong − cong): ${delta.toStringAsFixed(1)} ms',
+          (dialogCtx) => AlertDialog(
+            title: const Text('Stroop Test Complete'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Stroop Interference (Δ): ${delta.toStringAsFixed(1)} ms',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Accuracy: ${accuracy.toStringAsFixed(0)}% ($_correct / $totalRounds)',
+                ),
+                Text('Congruent RT: ${avgCong.toStringAsFixed(1)} ms'),
+                Text('Incongruent RT: ${avgIncong.toStringAsFixed(1)} ms'),
+              ],
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx),
                 child: const Text('Done'),
               ),
             ],
@@ -154,7 +245,6 @@ class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
     if (mounted) Navigator.pop(context);
   }
 
-  // ── UI ───────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     if (_showIntro) {
@@ -163,7 +253,7 @@ class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
         body: Center(
           child: ElevatedButton(
             onPressed: _showInstructions,
-            child: const Text('View Instructions'),
+            child: const Text('Start Stroop Test'),
           ),
         ),
       );
@@ -179,51 +269,133 @@ class _StroopTestScreenState extends ConsumerState<StroopTestScreen> {
           ),
         ],
       ),
-      body: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            'Round $_currentRound / $totalRounds',
-            style: const TextStyle(fontSize: 18),
-          ),
-          const SizedBox(height: 32),
-          Center(
-            child: Text(
-              _currentWord,
-              style: TextStyle(
-                fontSize: 48,
-                color: _currentColor,
-                fontWeight: FontWeight.bold,
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            LinearProgressIndicator(
+              value: _currentRound / totalRounds,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Round $_currentRound / $totalRounds',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  'Correct: $_correct · Errors: $_incorrect',
+                  style: const TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ],
+            ),
+            const Spacer(),
+            // High-contrast dark stimulus box so Yellow, Red, Green, Blue are equally legible
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF18181B),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color:
+                      _lastWasCorrect == null
+                          ? Colors.white24
+                          : (_lastWasCorrect!
+                              ? Colors.greenAccent
+                              : Colors.redAccent),
+                  width: 2,
+                ),
+              ),
+              child: Column(
+                children: [
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 100),
+                    child: Text(
+                      _awaitingResponse ? _currentTrial.word.toUpperCase() : '',
+                      key: ValueKey('$_currentRound-$_awaitingResponse'),
+                      style: TextStyle(
+                        fontSize: 52,
+                        color: _currentTrial.inkColor,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 24,
+                    child:
+                        _feedbackText != null
+                            ? Text(
+                              _feedbackText!,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color:
+                                    _lastWasCorrect == true
+                                        ? Colors.greenAccent
+                                        : Colors.redAccent,
+                              ),
+                            )
+                            : const Text(
+                              'Tap the INK color below',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.white54,
+                              ),
+                            ),
+                  ),
+                ],
               ),
             ),
-          ),
-          const SizedBox(height: 32),
-          Wrap(
-            spacing: 16,
-            runSpacing: 16,
-            alignment: WrapAlignment.center,
-            children:
-                _colorWords
-                    .map(
-                      (color) => ElevatedButton(
-                        onPressed:
-                            _awaitingResponse
-                                ? () => _handleAnswer(color)
-                                : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _colorMap[color],
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 16,
-                          ),
+            const Spacer(),
+            GridView.count(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: 2,
+              mainAxisSpacing: 14,
+              crossAxisSpacing: 14,
+              childAspectRatio: 2.6,
+              children:
+                  _colorWords.map((colorName) {
+                    final bgColor = _colorMap[colorName]!;
+                    final textColor =
+                        colorName == 'Yellow' ? Colors.black : Colors.white;
+                    return ElevatedButton(
+                      onPressed:
+                          _awaitingResponse
+                              ? () => _handleAnswer(colorName)
+                              : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: bgColor,
+                        disabledBackgroundColor: bgColor.withValues(alpha: 0.5),
+                        foregroundColor: textColor,
+                        disabledForegroundColor: textColor.withValues(
+                          alpha: 0.7,
                         ),
-                        child: Text(color),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
                       ),
-                    )
-                    .toList(),
-          ),
-        ],
+                      child: Text(
+                        colorName,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }

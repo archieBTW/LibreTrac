@@ -202,7 +202,7 @@ class _ProfileViewState extends ConsumerState<ProfileView> {
 
           const SizedBox(height: 32),
           const Text(
-            '😴 Sleep Stats (Last 7 Days)',
+            '😴 Sleep & Dream Stats (Last 7 Days)',
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
@@ -216,12 +216,20 @@ class _ProfileViewState extends ConsumerState<ProfileView> {
                   if (data.entryCount == 0) {
                     return const Text("No sleep data this week");
                   }
-                  final avg = data.avgDuration;
-                  final hours = avg;
-                  // final mins = avg.inMinutes.remainder(60);
-                  return Text(
-                    "Average: ${hours}h of sleep over ${data.entryCount} nights",
-                    style: Theme.of(context).textTheme.bodyMedium,
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Average: ${data.avgDuration.toStringAsFixed(1)}h of sleep · Quality ${data.avgQuality.toStringAsFixed(1)}/5 (${data.entryCount} night${data.entryCount == 1 ? '' : 's'})",
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        "Dreams logged: ${data.dreamCount}/${data.entryCount} nights"
+                        "${data.topTags.isNotEmpty ? ' · Top tags: ${data.topTags.join(', ')}' : ''}",
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   );
                 },
               );

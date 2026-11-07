@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:libretrac/features/substances/add_edit_substance_screen.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/features/substances/substance_detail_screen.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
@@ -20,9 +22,6 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
   bool _showPast = false;
   List<int> _savedOrder = [];
 
-  // ──────────────────────────────────────────────────────────────────────
-  // INIT ─ load any saved order once
-  // ──────────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -42,7 +41,6 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
     await prefs.setStringList(_prefsKey, ids.map((e) => e.toString()).toList());
   }
 
-  // Apply the saved order to whatever list we get from the DB.
   List<Substance> _sorted(List<Substance> original) {
     if (_savedOrder.isEmpty) return original;
 
@@ -56,19 +54,28 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
     return sorted;
   }
 
-  // ──────────────────────────────────────────────────────────────────────
-  // UI
-  // ──────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext ctx) {
     final substances = ref.watch(
       _showPast ? pastSubstancesStreamProvider : activeSubstancesStreamProvider,
     );
+    final allLogs = ref.watch(medicationDoseLogsProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Medications / Supplements'),
         actions: [
+          IconButton(
+            tooltip: 'Dose Log & Adherence Tracker',
+            icon: const Icon(Icons.event_available),
+            onPressed:
+                () => Navigator.push(
+                  ctx,
+                  MaterialPageRoute(
+                    builder: (_) => const MedicationTrackerScreen(),
+                  ),
+                ),
+          ),
           IconButton(
             tooltip: _showPast ? 'Show current' : 'Show past',
             icon: Icon(_showPast ? Icons.history_toggle_off : Icons.history),
@@ -79,11 +86,9 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
       body: substances.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text(e.toString())),
-        // ── DATA ────────────────────────────────────────────────────────
         data: (list) {
           final items = _sorted(list);
 
-          // 1️⃣ PAST list – plain ListView
           if (_showPast) {
             return ListView.separated(
               itemCount: items.length,
@@ -92,6 +97,7 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
                   (_, i) => _tile(
                     ctx,
                     items[i],
+                    allLogs: allLogs,
                     allNames: items.map((e) => e.name).toList(),
                     deletable: true,
                     permaDeletable: true,
@@ -99,15 +105,12 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
             );
           }
 
-          // 2️⃣ ACTIVE list – reorderable
           return Padding(
             padding: const EdgeInsets.only(bottom: 32.0),
             child: ReorderableListView.builder(
               itemCount: items.length,
-              proxyDecorator: _proxyDecorator, // nice drag shadow
+              proxyDecorator: _proxyDecorator,
               onReorder: (oldIndex, newIndex) async {
-                // Normalise index because ReorderableListView’s callback
-                // gives a +1 offset when dragging downwards.
                 if (newIndex > oldIndex) newIndex -= 1;
 
                 setState(() {
@@ -121,12 +124,12 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
                   (_, i) => _tile(
                     ctx,
                     items[i],
+                    allLogs: allLogs,
                     allNames: items.map((e) => e.name).toList(),
                     key: ValueKey(items[i].id),
                   ),
             ),
           );
-          // );
         },
       ),
       floatingActionButton:
@@ -145,58 +148,136 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
     );
   }
 
-  // ────────────────────────────────────────────────────────────────────
-  // HELPER: one ListTile
-  // ────────────────────────────────────────────────────────────────────
   Widget _tile(
     BuildContext ctx,
     Substance s, {
+    required List<MedicationDoseLog> allLogs,
     required List<String> allNames,
     bool deletable = true,
     bool permaDeletable = false,
     Key? key,
   }) {
+    final now = DateTime.now();
+    final timeFmt = DateFormat.jm();
+    final medLogs = allLogs.where((l) => l.substanceId == s.id).toList();
+    final todayLogs =
+        medLogs.where((l) => isSameCalendarDay(l.takenAt, now)).toList()
+          ..sort((a, b) => a.takenAt.compareTo(b.takenAt));
+    final takenToday = todayLogs.isNotEmpty;
+
     return ListTile(
       key: key,
-      title: Text(s.name),
-      subtitle: Text(s.dosage ?? ''),
-      trailing:
-          deletable
+      leading:
+          !permaDeletable
               ? IconButton(
-                icon: const Icon(Icons.delete),
+                tooltip:
+                    takenToday
+                        ? 'Taken today · Tap to log another dose'
+                        : 'Tap to mark taken now',
+                icon: Icon(
+                  takenToday
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  color: takenToday ? Colors.green : Colors.amber,
+                ),
                 onPressed: () async {
-                  if (permaDeletable) {
-                    final confirm = await showDialog<bool>(
-                      context: ctx,
-                      builder:
-                          (_) => AlertDialog(
-                            title: const Text('Permanently delete?'),
-                            content: const Text(
-                              'This will completely remove the substance and its history. Are you sure?',
-                            ),
-                            actions: [
-                              TextButton(
-                                child: const Text('Cancel'),
-                                onPressed: () => Navigator.pop(ctx, false),
-                              ),
-                              TextButton(
-                                child: const Text('Delete'),
-                                onPressed: () => Navigator.pop(ctx, true),
-                              ),
-                            ],
-                          ),
+                  final entry = await ref
+                      .read(medicationDoseLogsProvider.notifier)
+                      .logDose(substance: s);
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          'Logged ${s.name} at ${timeFmt.format(entry.takenAt)}',
+                        ),
+                        action: SnackBarAction(
+                          label: 'Undo',
+                          onPressed: () {
+                            ref
+                                .read(medicationDoseLogsProvider.notifier)
+                                .deleteLog(entry.id);
+                          },
+                        ),
+                      ),
                     );
-
-                    if (confirm == true) {
-                      await ref.read(substanceRepoProvider).delete(s.id);
-                    }
-                  } else {
-                    await ref.read(substanceRepoProvider).stop(s.id);
                   }
                 },
               )
-              : null,
+              : const Icon(Icons.history),
+      title: Text(s.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (s.dosage != null && s.dosage!.isNotEmpty) Text(s.dosage!),
+          if (!permaDeletable)
+            Text(
+              takenToday
+                  ? '✓ Taken today at ${todayLogs.map((l) => timeFmt.format(l.takenAt)).join(', ')}'
+                  : (medLogs.isNotEmpty
+                      ? 'Not logged today · Last: ${DateFormat.MMMd().add_jm().format(medLogs.first.takenAt)}'
+                      : 'Not logged yet today'),
+              style: TextStyle(
+                fontSize: 12,
+                color: takenToday ? Colors.green : Colors.grey,
+                fontWeight: takenToday ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+        ],
+      ),
+      trailing:
+          deletable
+              ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!permaDeletable)
+                    IconButton(
+                      icon: const Icon(Icons.more_time, size: 20),
+                      tooltip: 'Log dose at custom time',
+                      onPressed: () => showLogDoseDialog(ctx, ref, s),
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    tooltip:
+                        permaDeletable
+                            ? 'Permanently delete'
+                            : 'Move to past medications',
+                    onPressed: () async {
+                      if (permaDeletable) {
+                        final confirm = await showDialog<bool>(
+                          context: ctx,
+                          builder:
+                              (_) => AlertDialog(
+                                title: const Text('Permanently delete?'),
+                                content: const Text(
+                                  'This will completely remove the substance and its history. Are you sure?',
+                                ),
+                                actions: [
+                                  TextButton(
+                                    child: const Text('Cancel'),
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                  ),
+                                  TextButton(
+                                    child: const Text('Delete'),
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                  ),
+                                ],
+                              ),
+                        );
 
+                        if (confirm == true) {
+                          await ref.read(substanceRepoProvider).delete(s.id);
+                          await ref
+                              .read(medicationDoseLogsProvider.notifier)
+                              .clearAllForSubstance(s.id);
+                        }
+                      } else {
+                        await ref.read(substanceRepoProvider).stop(s.id);
+                      }
+                    },
+                  ),
+                ],
+              )
+              : null,
       onTap:
           () => Navigator.push(
             ctx,
@@ -209,7 +290,6 @@ class _SubstanceListScreenState extends ConsumerState<SubstanceListScreen> {
     );
   }
 
-  // Optional: give the dragged item a Material “lift” effect
   static Widget _proxyDecorator(
     Widget child,
     int index,

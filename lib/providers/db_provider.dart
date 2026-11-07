@@ -7,6 +7,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/features/cognitive/model/cog_test_kind.dart';
+import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
 import 'package:libretrac/services/streak_popup_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/database/app_database.dart';
@@ -877,21 +878,56 @@ final cognitiveTopScoresProvider = FutureProvider<Map<CogTestKind, String>>((
   return results;
 });
 
-final weeklySleepStatsProvider =
-    FutureProvider<({int avgDuration, int entryCount})>((ref) async {
-      final db = ref.watch(dbProvider);
-      final oneWeekAgo = DateTime.now().subtract(const Duration(days: 7));
-      final entries = await db.sleepEntriesSince(oneWeekAgo);
+final weeklySleepStatsProvider = FutureProvider<
+  ({
+    double avgDuration,
+    double avgQuality,
+    int entryCount,
+    int dreamCount,
+    List<String> topTags,
+  })
+>((ref) async {
+  ref.watch(sleepStreamProvider);
+  final db = ref.watch(dbProvider);
+  final oneWeekAgo = DateTime.now().subtract(const Duration(days: 7));
+  final entries = await db.sleepEntriesSince(oneWeekAgo);
 
-      if (entries.isEmpty) {
-        return (avgDuration: 0, entryCount: 0);
+  if (entries.isEmpty) {
+    return (
+      avgDuration: 0.0,
+      avgQuality: 0.0,
+      entryCount: 0,
+      dreamCount: 0,
+      topTags: const <String>[],
+    );
+  }
+
+  final totalDuration = entries
+      .map((e) => e.hoursSlept)
+      .reduce((a, b) => a + b);
+  final totalQuality = entries
+      .map((e) => e.quality)
+      .reduce((a, b) => a + b);
+
+  int dreamCount = 0;
+  final tagFreq = <String, int>{};
+  for (final e in entries) {
+    if (e.hasDream) {
+      dreamCount++;
+      for (final t in e.dreamTags) {
+        tagFreq[t] = (tagFreq[t] ?? 0) + 1;
       }
+    }
+  }
 
-      final totalDuration = entries
-          .map((e) => e.hoursSlept)
-          .reduce((a, b) => a + b);
+  final sortedTags =
+      tagFreq.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
 
-      final avg = totalDuration ~/ entries.length;
-
-      return (avgDuration: avg, entryCount: entries.length);
-    });
+  return (
+    avgDuration: totalDuration / entries.length,
+    avgQuality: totalQuality / entries.length,
+    entryCount: entries.length,
+    dreamCount: dreamCount,
+    topTags: sortedTags.take(3).map((e) => e.key).toList(),
+  );
+});

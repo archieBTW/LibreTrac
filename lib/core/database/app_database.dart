@@ -60,6 +60,10 @@ class AppDatabase extends _$AppDatabase {
     return (update(sleepEntries)
       ..where((tbl) => tbl.id.equals(entry.id))).write(entry);
   }
+
+  Future<int> deleteSleepEntry(int id) {
+    return (delete(sleepEntries)..where((tbl) => tbl.id.equals(id))).go();
+  }
 }
 
 QueryExecutor _openConnection() {

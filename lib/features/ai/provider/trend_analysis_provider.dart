@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/features/ai/service/gemini_api_service.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
 enum TrendRange { week, month, threeMonths, sixMonths }
@@ -29,10 +30,17 @@ final analysisProvider = FutureProvider.autoDispose<String?>((ref) async {
   final symbolSearch = await db.symbolSearchResultsSince(since);
   final substances = await db.substancesActiveSince(since);
   final sleeps = await db.sleepEntriesSince(since);
+  final medLogs =
+      ref
+          .watch(medicationDoseLogsProvider)
+          .where((l) => !l.takenAt.isBefore(since))
+          .toList();
 
   // If there's nothing to analyze, return null
   final hasData =
       moods.isNotEmpty ||
+      sleeps.isNotEmpty ||
+      medLogs.isNotEmpty ||
       reactions.isNotEmpty ||
       stroop.isNotEmpty ||
       goNoGo.isNotEmpty ||
@@ -54,6 +62,7 @@ final analysisProvider = FutureProvider.autoDispose<String?>((ref) async {
       symbolSearch: symbolSearch,
       substances: substances,
       sleeps: sleeps,
+      medicationLogs: medLogs,
     ),
   );
 });

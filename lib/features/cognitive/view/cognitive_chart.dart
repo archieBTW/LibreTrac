@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/features/cognitive/model/cog_test_kind.dart';
 import 'package:libretrac/providers/db_provider.dart';
-import 'package:libretrac/core/database/app_database.dart';
 
 class CognitiveChart {
   showCognitiveChart(
@@ -203,6 +202,11 @@ class _CognitiveChartCard extends ConsumerWidget {
       timestamps.add(r.timestamp);
     }
 
+    final isSingle = spots.length == 1;
+    final double minX = isSingle ? -0.5 : 0;
+    final double maxX =
+        isSingle ? 0.5 : max(1.0, (spots.length - 1).toDouble());
+
     return Card(
       key: Key(kind.label),
       elevation: 2,
@@ -235,9 +239,24 @@ class _CognitiveChartCard extends ConsumerWidget {
                             ),
                             minY: 0,
                             maxY: 105,
-                            minX: 0,
-                            maxX: max(0, (spots.length - 1).toDouble()),
+                            minX: minX,
+                            maxX: maxX,
                             gridData: FlGridData(show: true),
+                            extraLinesData: ExtraLinesData(
+                              horizontalLines:
+                                  isSingle
+                                      ? [
+                                        HorizontalLine(
+                                          y: spots.first.y,
+                                          color: Colors.amber.withValues(
+                                            alpha: 0.35,
+                                          ),
+                                          strokeWidth: 1.5,
+                                          dashArray: [6, 4],
+                                        ),
+                                      ]
+                                      : const [],
+                            ),
                             titlesData: FlTitlesData(
                               rightTitles: AxisTitles(
                                 sideTitles: SideTitles(
@@ -263,7 +282,11 @@ class _CognitiveChartCard extends ConsumerWidget {
                                   showTitles: true,
                                   interval: 1,
                                   getTitlesWidget: (value, _) {
-                                    final i = value.toInt();
+                                    if ((value - value.roundToDouble()).abs() >
+                                        0.01) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    final i = value.round();
                                     if (i < 0 || i >= timestamps.length) {
                                       return const SizedBox.shrink();
                                     }
@@ -309,7 +332,17 @@ class _CognitiveChartCard extends ConsumerWidget {
                                 isCurved: true,
                                 color: Colors.amber,
                                 barWidth: 3,
-                                dotData: FlDotData(show: false),
+                                dotData: FlDotData(
+                                  show: isSingle || spots.length <= 7,
+                                  getDotPainter:
+                                      (spot, percent, barData, index) =>
+                                          FlDotCirclePainter(
+                                            radius: isSingle ? 5.0 : 3.0,
+                                            color: Colors.amber,
+                                            strokeWidth: isSingle ? 2.0 : 1.0,
+                                            strokeColor: Colors.white,
+                                          ),
+                                ),
                               ),
                             ],
                           ),
@@ -323,11 +356,9 @@ class _CognitiveChartCard extends ConsumerWidget {
   }
 
   bool _isSameWeek(DateTime a, DateTime b) {
-    // Calculate the start of the week (Monday) for both dates
     final aStart = a.subtract(Duration(days: a.weekday - 1));
     final bStart = b.subtract(Duration(days: b.weekday - 1));
 
-    // Compare year, month, day of the week-start
     return aStart.year == bStart.year &&
         aStart.month == bStart.month &&
         aStart.day == bStart.day;

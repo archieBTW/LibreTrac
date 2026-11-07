@@ -1,13 +1,13 @@
+import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
 class MoodChartPage extends StatelessWidget {
-  MoodChartPage({
+  const MoodChartPage({
     required this.ordered,
     required this.selectedMetrics,
-    // required this.moodColors,
     required this.allMetrics,
     required this.onMetricToggle,
     required this.customMetrics,
@@ -17,8 +17,6 @@ class MoodChartPage extends StatelessWidget {
 
   final List<MoodEntry> ordered;
   final Set<String> selectedMetrics;
-  // final Map<String, Color> moodColors;
-  // final List<String> allMetrics;
   final List<CustomMetric> allMetrics;
 
   final void Function(String metric, bool isSelected) onMetricToggle;
@@ -43,13 +41,23 @@ class MoodChartPage extends StatelessWidget {
       }
 
       if (spots.isNotEmpty) {
+        final isSingle = spots.length == 1;
         lines.add(
           LineChartBarData(
             spots: spots,
             isCurved: true,
             barWidth: 3,
             color: metric.color,
-            dotData: FlDotData(show: false),
+            dotData: FlDotData(
+              show: isSingle || spots.length <= 7,
+              getDotPainter: (spot, percent, barData, index) =>
+                  FlDotCirclePainter(
+                    radius: isSingle ? 5.5 : 3.0,
+                    color: metric.color,
+                    strokeWidth: isSingle ? 2.0 : 1.0,
+                    strokeColor: Colors.white,
+                  ),
+            ),
             belowBarData: BarAreaData(show: false),
           ),
         );
@@ -59,55 +67,37 @@ class MoodChartPage extends StatelessWidget {
     return lines;
   }
 
-  // List<LineChartBarData> _generateMoodLines(List<MoodEntry> entries) {
-  //   final List<LineChartBarData> lines = [];
-
-  //   final metrics =
-  //       selectedMetrics.isEmpty
-  //           ? allMetrics
-  //               .toSet() // default when the app is freshly launched
-  //           : selectedMetrics;
-
-  //   for (final metric in metrics) {
-  //     final spots = <FlSpot>[];
-
-  //     for (int i = 0; i < entries.length; i++) {
-  //       final entry = entries[i];
-  //       final double? value = switch (metric) {
-  //         'Energy' => entry.energy.toDouble(),
-  //         'Happiness' => entry.happiness.toDouble(),
-  //         'Creativity' => entry.creativity.toDouble(),
-  //         'Focus' => entry.focus.toDouble(),
-  //         'Irritability' => entry.irritability.toDouble(),
-  //         'Anxiety' => entry.anxiety.toDouble(),
-  //         _ => null,
-  //       };
-
-  //       if (value != null) {
-  //         spots.add(FlSpot(i.toDouble(), value));
-  //       }
-  //     }
-
-  //     if (spots.isNotEmpty) {
-  //       lines.add(
-  //         LineChartBarData(
-  //           spots: spots,
-  //           isCurved: true,
-  //           barWidth: 3,
-  //           color: moodColors[metric],
-  //           dotData: FlDotData(show: false),
-  //           belowBarData: BarAreaData(show: false),
-  //         ),
-  //       );
-  //     }
-  //   }
-
-  //   return lines;
-  // }
+  List<HorizontalLine> _generateSinglePointReferenceLines(
+    List<MoodEntry> entries,
+  ) {
+    if (entries.length != 1) return const [];
+    final entry = entries.first;
+    final lines = <HorizontalLine>[];
+    for (final metric in allMetrics.where(
+      (m) => selectedMetrics.contains(m.name),
+    )) {
+      final value = entry.customMetrics?[metric.name]?.toDouble();
+      if (value != null) {
+        lines.add(
+          HorizontalLine(
+            y: value,
+            color: metric.color.withValues(alpha: 0.35),
+            strokeWidth: 1.5,
+            dashArray: [6, 4],
+          ),
+        );
+      }
+    }
+    return lines;
+  }
 
   @override
   Widget build(BuildContext context) {
-    print('testing');
+    final isSingle = ordered.length == 1;
+    final double minX = isSingle ? -0.5 : 0;
+    final double maxX =
+        isSingle ? 0.5 : max(1.0, (ordered.length - 1).toDouble());
+
     return Column(
       children: [
         Wrap(
@@ -119,7 +109,7 @@ class MoodChartPage extends StatelessWidget {
                 return FilterChip(
                   label: Text(metric.name),
                   selected: selected,
-                  selectedColor: metric.color.withOpacity(.30),
+                  selectedColor: metric.color.withValues(alpha: .30),
                   onSelected: (value) => onMetricToggle(metric.name, value),
                 );
               }).toList(),
@@ -131,14 +121,17 @@ class MoodChartPage extends StatelessWidget {
             child: LineChart(
               LineChartData(
                 lineTouchData: LineTouchData(
-                  enabled: false, // <- disables built-in touch handling
+                  enabled: false,
                   handleBuiltInTouches: false,
                 ),
                 minY: 0,
                 maxY: 10,
-                minX: 0,
-                maxX: (ordered.length - 1).toDouble(),
+                minX: minX,
+                maxX: maxX,
                 gridData: FlGridData(show: true),
+                extraLinesData: ExtraLinesData(
+                  horizontalLines: _generateSinglePointReferenceLines(ordered),
+                ),
                 titlesData: FlTitlesData(
                   topTitles: AxisTitles(
                     sideTitles: SideTitles(showTitles: false),
@@ -162,9 +155,12 @@ class MoodChartPage extends StatelessWidget {
                       showTitles: true,
                       interval: 1,
                       getTitlesWidget: (value, _) {
-                        final i = value.toInt();
+                        if ((value - value.roundToDouble()).abs() > 0.01) {
+                          return const SizedBox.shrink();
+                        }
+                        final i = value.round();
                         if (i < 0 || i >= ordered.length) {
-                          return const SizedBox();
+                          return const SizedBox.shrink();
                         }
                         final d = ordered[i].timestamp;
 
@@ -175,8 +171,6 @@ class MoodChartPage extends StatelessWidget {
                           case MoodWindow.week:
                             return label('${d.month}/${d.day}');
                           case MoodWindow.month:
-                            // Show date if it's the first entry of the week
-                            // i.e., different week than the previous point
                             if (i == 0) {
                               return label('${d.month}/${d.day}');
                             } else {
@@ -185,7 +179,7 @@ class MoodChartPage extends StatelessWidget {
                                 return label('${d.month}/${d.day}');
                               }
                             }
-                            return const SizedBox();
+                            return const SizedBox.shrink();
                           case MoodWindow.threeMonths:
                           case MoodWindow.sixMonths:
                             if (i == 0) {
@@ -196,7 +190,7 @@ class MoodChartPage extends StatelessWidget {
                                 return label(_monthName(d.month));
                               }
                             }
-                            return const SizedBox();
+                            return const SizedBox.shrink();
                         }
                       },
                     ),
@@ -212,11 +206,9 @@ class MoodChartPage extends StatelessWidget {
   }
 
   bool _isSameWeek(DateTime a, DateTime b) {
-    // Calculate the start of the week (Monday) for both dates
     final aStart = a.subtract(Duration(days: a.weekday - 1));
     final bStart = b.subtract(Duration(days: b.weekday - 1));
 
-    // Compare year, month, day of the week-start
     return aStart.year == bStart.year &&
         aStart.month == bStart.month &&
         aStart.day == bStart.day;
