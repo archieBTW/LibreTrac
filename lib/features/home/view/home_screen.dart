@@ -14,7 +14,6 @@ import 'package:libretrac/features/mood_sleep/view/mood_sleep_carousel.dart';
 import 'package:libretrac/features/mood_sleep/view/sleep_checkin_dialog.dart';
 import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:showcaseview/showcaseview.dart';
 import '../../../core/database/app_database.dart';
 import '../../../providers/db_provider.dart';
 import '../../mood_sleep/view/mood_checkin_screen.dart';
@@ -56,8 +55,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Set<String> selectedMetrics = {};
   Map<String, int>? customMetrics = {};
-  final GlobalKey _sleepPopupKey = GlobalKey();
-  bool _showSleepShowcase = false;
 
   @override
   void initState() {
@@ -72,8 +69,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final done = await OnboardingPrefs.isComplete();
       if (!done) {
         _startTutorial();
-      } else {
-        _maybePromptSleep();
       }
     });
   }
@@ -111,14 +106,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           (_) => AlertDialog(
             title: const Text('Welcome to LibreTrac!'),
             content: const Text(
-              'This is your personalized mood, sleep, and cognition tracker. Let’s take a quick tour!',
+              'This is your personalized mood, sleep, dream, and cognition tracker. Let’s take a quick tour!',
             ),
             actions: [
               TextButton(
                 onPressed: () async {
                   await OnboardingPrefs.markComplete();
                   Navigator.of(context).pop();
-                  _maybePromptSleep();
                 },
                 child: const Text('Skip'),
               ),
@@ -144,10 +138,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       barrierDismissible: false,
       builder:
           (_) => AlertDialog(
-            title: const Text('Daily Sleep Check-In'),
+            title: const Text('Sleep & Dream Check-Ins'),
             content: const Text(
-              'Each morning when you open LibreTrac, we’ll prompt you to reflect on your sleep. '
-              'It’s quick, simple, and helps us spot patterns that matter.\n\nReady to try it out?',
+              'Whenever you’d like, you can log your sleep or record a dream separately from the Check-In menu.\n\nReady to try logging your sleep?',
             ),
             actions: [
               ElevatedButton(
@@ -196,36 +189,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Future<void> _maybePromptSleep() async {
-    final db = ref.read(dbProvider);
-    final today = await db.entryFor(DateTime.now());
-    if (today != null) return; // already logged
-    if (!mounted) return;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const SleepCheckinDialog(),
-    );
-  }
-
-  _showSleepTutorial() async {
-    return Visibility(
-      visible: true, // create a bool flag if needed
-      child: Showcase(
-        key: _sleepPopupKey,
-        title: 'Sleep Check-In',
-        description: 'Every morning, LibreTrac will ask how you slept.',
-        child: Card(
-          child: ListTile(
-            title: Text('Sleep Popup Example'),
-            trailing: ElevatedButton(onPressed: () {}, child: Text('Log')),
-          ),
-        ),
-      ),
-    );
-  }
-
   void _showCheckInSheet() {
     showModalBottomSheet(
       context: context,
@@ -266,6 +229,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       context: context,
                       barrierDismissible: false,
                       builder: (_) => const SleepCheckinDialog(),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.nights_stay_outlined),
+                  title: const Text('Dream Check-In'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (_) => const DreamCheckinDialog(),
                     );
                   },
                 ),

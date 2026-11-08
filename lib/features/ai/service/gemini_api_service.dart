@@ -153,12 +153,9 @@ ${req.toPrettyJson()}
     }
   }
 
-  /// Analyzes a single sleep & dream entry in context of recent mood and active stack.
+  /// Analyzes a single dream entry strictly focusing on the dream itself through the user's chosen lens.
   Future<String> analyzeDreamEntry({
     required SleepEntry entry,
-    List<MoodEntry> recentMoods = const [],
-    List<Substance> activeSubstances = const [],
-    List<SleepEntry> recentSleeps = const [],
   }) async {
     await _ensureInitialized();
 
@@ -167,31 +164,30 @@ ${req.toPrettyJson()}
     }
 
     final dreamInstructions = await PrefsService.getEffectiveDreamInstructions();
+    final parsed = entry.parsedDream;
 
     final payload = {
-      'targetSleepEntry': entry.toExportJson(),
-      if (recentSleeps.isNotEmpty)
-        'recentSleepHistory': recentSleeps.map((s) => s.toExportJson()).toList(),
-      if (recentMoods.isNotEmpty)
-        'recentMoodCheckIns': recentMoods.map((m) => m.toExportJson()).toList(),
-      if (activeSubstances.isNotEmpty)
-        'activeSubstances':
-            activeSubstances.map((s) => s.toExportJson()).toList(),
+      'date': entry.date.toIso8601String().split('T').first,
+      if (parsed.title != null && parsed.title!.isNotEmpty)
+        'dreamTitle': parsed.title!,
+      if (parsed.tags.isNotEmpty) 'dreamTags': parsed.tags,
+      'dreamRecallClarity': '${parsed.clarity}/5',
+      'dreamNarrative': parsed.text,
     };
 
     final prompt = '''
-You are an expert in sleep analysis, dream interpretation, and behavioral health.
-Analyze the user's `targetSleepEntry` (including hours slept, sleep quality, dream title, dream tags, recall clarity, and dream narrative) in the context of their recent mood check-ins, sleep history, and active supplements/medications.
+You are an insightful dream analyst and interpreter.
+Analyze the user's dream entry below strictly focusing on the dream itself. Do NOT reference or speculate about sleep hours, sleep debt, mood check-ins, or supplements/medications.
 
 Dream Interpretation Lens & User Instructions:
 $dreamInstructions
 
 Structure your response in concise Markdown with:
-1. **🌙 Dream Interpretation & Themes**: Key imagery, themes, or patterns interpreted through the user's chosen lens above (or sleep quality reflection if no narrative was logged).
-2. **🔗 Sleep, Mood & Stack Connections**: How this night's sleep/dream relates to recent mood metrics, sleep debt, or active substances/supplements (e.g., compounds known to affect REM sleep or dream vividness).
-3. **💡 Takeaway & Reflection**: One brief, practical takeaway or reflective question aligned with the user's interpretation lens.
+1. **🌙 Dream Interpretation & Themes**: Key imagery, symbols, narrative arcs, and themes interpreted through the user's chosen lens above.
+2. **💭 Emotional & Symbolic Resonance**: What the tone, setting, and dream characteristics (such as tags and clarity) suggest within this interpretive framework.
+3. **💡 Takeaway & Reflection**: One brief, meaningful takeaway or reflective question aligned with the user's interpretation lens.
 
-Data:
+Dream Entry Data:
 ${const JsonEncoder.withIndent('  ').convert(payload)}
 ''';
 
@@ -203,14 +199,11 @@ ${const JsonEncoder.withIndent('  ').convert(payload)}
     }
   }
 
-  /// Continues a multi-turn follow-up chat about a specific sleep & dream entry.
+  /// Continues a multi-turn follow-up chat about a specific dream entry.
   Future<String> continueDreamChat({
     required SleepEntry entry,
     required List<DreamChatMessage> history,
     required String userQuestion,
-    List<MoodEntry> recentMoods = const [],
-    List<Substance> activeSubstances = const [],
-    List<SleepEntry> recentSleeps = const [],
   }) async {
     await _ensureInitialized();
 
@@ -219,26 +212,25 @@ ${const JsonEncoder.withIndent('  ').convert(payload)}
     }
 
     final dreamInstructions = await PrefsService.getEffectiveDreamInstructions();
+    final parsed = entry.parsedDream;
 
     final payload = {
-      'targetSleepEntry': entry.toExportJson(),
-      if (recentSleeps.isNotEmpty)
-        'recentSleepHistory': recentSleeps.map((s) => s.toExportJson()).toList(),
-      if (recentMoods.isNotEmpty)
-        'recentMoodCheckIns': recentMoods.map((m) => m.toExportJson()).toList(),
-      if (activeSubstances.isNotEmpty)
-        'activeSubstances':
-            activeSubstances.map((s) => s.toExportJson()).toList(),
+      'date': entry.date.toIso8601String().split('T').first,
+      if (parsed.title != null && parsed.title!.isNotEmpty)
+        'dreamTitle': parsed.title!,
+      if (parsed.tags.isNotEmpty) 'dreamTags': parsed.tags,
+      'dreamRecallClarity': '${parsed.clarity}/5',
+      'dreamNarrative': parsed.text,
     };
 
     final systemContext = '''
-You are an expert in sleep analysis, dream interpretation, and behavioral health assisting the user with a specific sleep & dream check-in.
-Use the user's sleep/dream entry, recent mood check-ins, sleep history, and active supplements/medications below to answer their follow-up questions thoughtfully and concisely in Markdown.
+You are an insightful dream analyst and interpreter assisting the user with a specific dream journal entry.
+Answer the user's follow-up questions thoughtfully and concisely in Markdown based on their dream entry and chosen interpretation lens. Do NOT bring up sleep metrics, mood check-ins, or medication/supplement stacks unless the user explicitly asks about them.
 
 Dream Interpretation Lens & User Instructions:
 $dreamInstructions
 
-Context Data:
+Dream Entry Data:
 ${const JsonEncoder.withIndent('  ').convert(payload)}
 ''';
 
@@ -246,7 +238,7 @@ ${const JsonEncoder.withIndent('  ').convert(payload)}
       Content.text(systemContext),
       Content.model([
         TextPart(
-          'Understood. I have reviewed the sleep entry, dream journal, mood check-ins, and active stack.',
+          'Understood. I have reviewed your dream journal entry and interpretation lens.',
         ),
       ]),
       for (final msg in history)

@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart' as drift;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -17,11 +18,122 @@ import 'package:libretrac/services/prefs_service.dart';
 
 final sleepTagFilterProvider = StateProvider<String?>((ref) => null);
 
-class JournalListScreen extends ConsumerWidget {
+enum JournalDatePreset { all, today, last7, last30, custom }
+
+class JournalListScreen extends ConsumerStatefulWidget {
   const JournalListScreen({super.key});
 
   @override
-  Widget build(BuildContext ctx, WidgetRef ref) {
+  ConsumerState<JournalListScreen> createState() => _JournalListScreenState();
+}
+
+class _JournalListScreenState extends ConsumerState<JournalListScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
+  bool _isSearchOpen = false;
+  String _searchQuery = '';
+  JournalDatePreset _datePreset = JournalDatePreset.all;
+  DateTimeRange? _customDateRange;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  DateTimeRange? get _effectiveDateRange {
+    final now = DateTime.now();
+    switch (_datePreset) {
+      case JournalDatePreset.all:
+        return null;
+      case JournalDatePreset.today:
+        final start = DateTime(now.year, now.month, now.day);
+        final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
+        return DateTimeRange(start: start, end: end);
+      case JournalDatePreset.last7:
+        final start = DateTime(now.year, now.month, now.day).subtract(
+          const Duration(days: 6),
+        );
+        final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
+        return DateTimeRange(start: start, end: end);
+      case JournalDatePreset.last30:
+        final start = DateTime(now.year, now.month, now.day).subtract(
+          const Duration(days: 29),
+        );
+        final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
+        return DateTimeRange(start: start, end: end);
+      case JournalDatePreset.custom:
+        return _customDateRange;
+    }
+  }
+
+  bool _matchesDate(DateTime dt, DateTimeRange? range) {
+    if (range == null) return true;
+    final start = DateTime(range.start.year, range.start.month, range.start.day);
+    final end = DateTime(
+      range.end.year,
+      range.end.month,
+      range.end.day,
+      23,
+      59,
+      59,
+    );
+    return !dt.isBefore(start) && !dt.isAfter(end);
+  }
+
+  String _datePresetLabel() {
+    switch (_datePreset) {
+      case JournalDatePreset.all:
+        return 'All Time';
+      case JournalDatePreset.today:
+        return 'Today';
+      case JournalDatePreset.last7:
+        return 'Last 7 Days';
+      case JournalDatePreset.last30:
+        return 'Last 30 Days';
+      case JournalDatePreset.custom:
+        if (_customDateRange != null) {
+          final f = DateFormat.MMMd();
+          return '${f.format(_customDateRange!.start)} – ${f.format(_customDateRange!.end)}';
+        }
+        return 'Custom';
+    }
+  }
+
+  Future<void> _pickCustomRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: now.add(const Duration(days: 1)),
+      initialDateRange:
+          _customDateRange ??
+          DateTimeRange(
+            start: now.subtract(const Duration(days: 7)),
+            end: now,
+          ),
+    );
+    if (picked != null) {
+      setState(() {
+        _customDateRange = picked;
+        _datePreset = JournalDatePreset.custom;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final moodAsync = ref.watch(journalEntriesStreamProvider);
     final sleepAsync = ref.watch(sleepStreamProvider);
 
@@ -38,130 +150,314 @@ class JournalListScreen extends ConsumerWidget {
     final moods = moodAsync.value ?? const <MoodEntry>[];
     final sleeps = sleepAsync.value ?? const <SleepEntry>[];
 
-    final moodRows = <_JournalRow>[];
-    final sleepRows = <_JournalRow>[];
+    final dateRange = _effectiveDateRange;
+    final query = _searchQuery.trim().toLowerCase();
 
+    // ── 1. MOOD ROWS ──
     final filter = ref.watch(journalFilterProvider);
-    final selectedDreamTag = ref.watch(sleepTagFilterProvider);
     final metricDefs = ref.watch(customMetricsProvider);
+    final moodRows = <_JournalRow>[];
 
     for (final m in moods) {
+      if (!_matchesDate(m.timestamp, dateRange)) continue;
       final hasNote = (m.notes?.trim().isNotEmpty ?? false);
-      if (filter == JournalFilter.all || hasNote) {
-        moodRows.add(_JournalRow.mood(m, metricDefs));
-      }
-    }
+      if (filter == JournalFilter.notesOnly && !hasNote) continue;
 
+      if (query.isNotEmpty) {
+        final noteMatch = m.notes?.toLowerCase().contains(query) ?? false;
+        final metricMatch =
+            m.customMetrics?.keys.any((k) => k.toLowerCase().contains(query)) ??
+            false;
+        if (!noteMatch && !metricMatch) continue;
+      }
+      moodRows.add(_JournalRow.mood(m, metricDefs));
+    }
+    moodRows.sort((a, b) => b.date.compareTo(a.date));
+
+    // ── 2. SLEEP ROWS (Only actual sleep check-ins) ──
+    final sleepRows = <_JournalRow>[];
     for (final s in sleeps) {
-      final hasDream = s.hasDream;
-      if (filter == JournalFilter.notesOnly && !hasDream) continue;
-      if (selectedDreamTag != null) {
-        if (selectedDreamTag == '__has_dream__') {
-          if (!hasDream) continue;
-        } else if (!s.dreamTags.contains(selectedDreamTag)) {
-          continue;
-        }
+      if (s.hoursSlept <= 0) continue; // Exclude standalone dream entries
+      if (!_matchesDate(s.date, dateRange)) continue;
+
+      if (query.isNotEmpty) {
+        final dateStr = DateFormat.yMMMd().format(s.date).toLowerCase();
+        final hoursStr = '${s.hoursSlept}';
+        if (!dateStr.contains(query) && !hoursStr.contains(query)) continue;
       }
       sleepRows.add(_JournalRow.sleep(s));
     }
-
-    moodRows.sort((a, b) => b.date.compareTo(a.date));
     sleepRows.sort((a, b) => b.date.compareTo(a.date));
 
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            filter == JournalFilter.all ? 'All Check-ins' : 'Journals',
-          ),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Mood'),
-              Tab(text: 'Sleep & Dreams'),
-              Tab(text: 'Meds'),
-            ],
-          ),
-          actions: [
+    // ── 3. DREAM ROWS (Only entries with dreams) ──
+    final selectedDreamTag = ref.watch(sleepTagFilterProvider);
+    final dreamRows = <_JournalRow>[];
+    final allDreamEntries = sleeps.where((s) => s.hasDream).toList();
+
+    for (final s in allDreamEntries) {
+      if (!_matchesDate(s.date, dateRange)) continue;
+      if (selectedDreamTag != null &&
+          !s.dreamTags.contains(selectedDreamTag)) {
+        continue;
+      }
+
+      if (query.isNotEmpty) {
+        final parsed = s.parsedDream;
+        final titleMatch = parsed.title?.toLowerCase().contains(query) ?? false;
+        final textMatch = parsed.text.toLowerCase().contains(query);
+        final tagMatch = parsed.tags.any((t) => t.toLowerCase().contains(query));
+        final chatMatch = parsed.aiChat.any(
+          (m) => m.text.toLowerCase().contains(query),
+        );
+        if (!titleMatch && !textMatch && !tagMatch && !chatMatch) continue;
+      }
+      dreamRows.add(_JournalRow.dream(s));
+    }
+    dreamRows.sort((a, b) => b.date.compareTo(a.date));
+
+    return Scaffold(
+      appBar: AppBar(
+        title:
+            _isSearchOpen
+                ? TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'Search check-ins, dreams, notes…',
+                    border: InputBorder.none,
+                    isDense: true,
+                  ),
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                )
+                : const Text('Check-Ins & Journals'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'Mood'),
+            Tab(text: 'Sleep'),
+            Tab(text: 'Dreams'),
+            Tab(text: 'Meds'),
+          ],
+        ),
+        actions: [
+          if (_isSearchOpen)
             IconButton(
-              icon: const Icon(Icons.auto_awesome),
-              tooltip: 'AI Dream & Sleep Pattern Analysis',
-              onPressed: () => _showSleepPatternAnalysisDialog(ctx, ref, sleeps, moods),
+              icon: const Icon(Icons.close),
+              onPressed: () {
+                setState(() {
+                  _searchController.clear();
+                  _searchQuery = '';
+                  _isSearchOpen = false;
+                });
+              },
+            )
+          else ...[
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: 'Search',
+              onPressed: () => setState(() => _isSearchOpen = true),
             ),
-            PopupMenuButton<JournalFilter>(
-              icon: const Icon(Icons.filter_list),
-              onSelected:
-                  (val) => ref.read(journalFilterProvider.notifier).state = val,
+            PopupMenuButton<JournalDatePreset>(
+              icon: Icon(
+                _datePreset == JournalDatePreset.all
+                    ? Icons.calendar_month_outlined
+                    : Icons.calendar_month,
+                color:
+                    _datePreset != JournalDatePreset.all
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+              ),
+              tooltip: 'Filter by Date: ${_datePresetLabel()}',
+              onSelected: (preset) {
+                if (preset == JournalDatePreset.custom) {
+                  _pickCustomRange();
+                } else {
+                  setState(() => _datePreset = preset);
+                }
+              },
               itemBuilder:
-                  (ctx) => [
+                  (_) => [
                     const PopupMenuItem(
-                      value: JournalFilter.all,
-                      child: Text('All Check-ins'),
+                      value: JournalDatePreset.all,
+                      child: Text('All Time'),
                     ),
                     const PopupMenuItem(
-                      value: JournalFilter.notesOnly,
-                      child: Text('Journal Entries Only'),
+                      value: JournalDatePreset.today,
+                      child: Text('Today'),
+                    ),
+                    const PopupMenuItem(
+                      value: JournalDatePreset.last7,
+                      child: Text('Last 7 Days'),
+                    ),
+                    const PopupMenuItem(
+                      value: JournalDatePreset.last30,
+                      child: Text('Last 30 Days'),
+                    ),
+                    const PopupMenuItem(
+                      value: JournalDatePreset.custom,
+                      child: Text('Custom Date Range…'),
                     ),
                   ],
             ),
-          ],
-        ),
-        body: TabBarView(
-          children: [
-            _JournalList(rows: moodRows),
-            Column(
-              children: [
-                _SleepFilterHeader(
-                  allSleeps: sleeps,
-                  selectedTag: selectedDreamTag,
-                  onTagSelected:
-                      (tag) =>
-                          ref.read(sleepTagFilterProvider.notifier).state = tag,
-                  onAnalyzeTap:
-                      () => _showSleepPatternAnalysisDialog(
-                        ctx,
-                        ref,
-                        sleeps,
-                        moods,
+            IconButton(
+              icon: const Icon(Icons.auto_awesome),
+              tooltip: 'AI Dream & Sleep Insights',
+              onPressed:
+                  () => _showSleepPatternAnalysisDialog(
+                    context,
+                    ref,
+                    sleeps,
+                    moods,
+                  ),
+            ),
+            if (_tabController.index == 0)
+              PopupMenuButton<JournalFilter>(
+                icon: const Icon(Icons.filter_list),
+                onSelected:
+                    (val) =>
+                        ref.read(journalFilterProvider.notifier).state = val,
+                itemBuilder:
+                    (_) => [
+                      const PopupMenuItem(
+                        value: JournalFilter.all,
+                        child: Text('All Mood Entries'),
                       ),
+                      const PopupMenuItem(
+                        value: JournalFilter.notesOnly,
+                        child: Text('Entries With Notes Only'),
+                      ),
+                    ],
+              ),
+          ],
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_datePreset != JournalDatePreset.all || _searchQuery.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+              child: Row(
+                children: [
+                  if (_datePreset != JournalDatePreset.all) ...[
+                    InputChip(
+                      label: Text('Date: ${_datePresetLabel()}'),
+                      onDeleted:
+                          () =>
+                              setState(() => _datePreset = JournalDatePreset.all),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  if (_searchQuery.isNotEmpty) ...[
+                    InputChip(
+                      label: Text('Query: "$_searchQuery"'),
+                      onDeleted: () {
+                        setState(() {
+                          _searchController.clear();
+                          _searchQuery = '';
+                        });
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _JournalList(
+                  rows: moodRows,
+                  emptyText:
+                      _searchQuery.isNotEmpty
+                          ? 'No mood entries matching "$_searchQuery".'
+                          : 'No mood entries found.',
                 ),
-                const Divider(height: 1),
-                Expanded(child: _JournalList(rows: sleepRows)),
+                _JournalList(
+                  rows: sleepRows,
+                  emptyText:
+                      _searchQuery.isNotEmpty
+                          ? 'No sleep entries matching "$_searchQuery".'
+                          : 'No sleep entries found.',
+                ),
+                Column(
+                  children: [
+                    _DreamFilterHeader(
+                      allDreams: allDreamEntries,
+                      selectedTag: selectedDreamTag,
+                      onTagSelected:
+                          (tag) =>
+                              ref.read(sleepTagFilterProvider.notifier).state =
+                                  tag,
+                      onAnalyzeTap:
+                          () => _showSleepPatternAnalysisDialog(
+                            context,
+                            ref,
+                            sleeps,
+                            moods,
+                          ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: _JournalList(
+                        rows: dreamRows,
+                        emptyText:
+                            _searchQuery.isNotEmpty
+                                ? 'No dreams matching "$_searchQuery".'
+                                : 'No dreams recorded yet.',
+                      ),
+                    ),
+                  ],
+                ),
+                MedicationTrackerView(
+                  searchQuery: _searchQuery,
+                  dateRange: dateRange,
+                ),
               ],
             ),
-            const MedicationTrackerView(),
-          ],
-        ),
-        floatingActionButton: Builder(
-          builder: (tabCtx) {
-            return FloatingActionButton(
-              onPressed: () {
-                final tabIndex = DefaultTabController.of(tabCtx).index;
-                if (tabIndex == 1) {
-                  showDialog(
-                    context: ctx,
-                    builder: (_) => const SleepCheckinDialog(),
-                  );
-                } else if (tabIndex == 2) {
-                  Navigator.push(
-                    ctx,
-                    MaterialPageRoute(
-                      builder: (_) => const AddEditSubstanceScreen(),
-                    ),
-                  );
-                } else {
-                  Navigator.push(
-                    ctx,
-                    MaterialPageRoute(
-                      builder: (_) => const MoodCheckInScreen(),
-                    ),
-                  );
-                }
-              },
-              child: const Icon(Icons.add),
-            );
-          },
-        ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        tooltip: switch (_tabController.index) {
+          0 => 'Add Mood Check-In',
+          1 => 'Add Sleep Check-In',
+          2 => 'Add Dream Check-In',
+          _ => 'Add Medication',
+        },
+        onPressed: () {
+          switch (_tabController.index) {
+            case 0:
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const MoodCheckInScreen()),
+              );
+              break;
+            case 1:
+              showDialog(
+                context: context,
+                builder: (_) => const SleepCheckinDialog(),
+              );
+              break;
+            case 2:
+              showDialog(
+                context: context,
+                builder: (_) => const DreamCheckinDialog(),
+              );
+              break;
+            case 3:
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const AddEditSubstanceScreen(),
+                ),
+              );
+              break;
+          }
+        },
+        child: const Icon(Icons.add),
       ),
     );
   }
@@ -204,7 +500,7 @@ class JournalListScreen extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'Analyze your sleep consistency, recurring dream themes, dream tags, and how they correlate with your next-day mood and active supplements.',
+                              'Analyze your sleep consistency, recurring dream themes, dream tags, and correlations.',
                               style: TextStyle(fontSize: 13),
                             ),
                             const SizedBox(height: 12),
@@ -321,80 +617,75 @@ class JournalListScreen extends ConsumerWidget {
   }
 }
 
-class _SleepFilterHeader extends StatelessWidget {
-  const _SleepFilterHeader({
-    required this.allSleeps,
+class _DreamFilterHeader extends StatelessWidget {
+  const _DreamFilterHeader({
+    required this.allDreams,
     required this.selectedTag,
     required this.onTagSelected,
     required this.onAnalyzeTap,
   });
 
-  final List<SleepEntry> allSleeps;
+  final List<SleepEntry> allDreams;
   final String? selectedTag;
   final ValueChanged<String?> onTagSelected;
   final VoidCallback onAnalyzeTap;
 
   @override
   Widget build(BuildContext context) {
-    final dreamCount = allSleeps.where((s) => s.hasDream).length;
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                ActionChip(
-                  avatar: const Icon(Icons.auto_awesome, size: 16),
-                  label: const Text('AI Dream Insights'),
-                  onPressed: onAnalyzeTap,
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: Text('All (${allSleeps.length})'),
-                  selected: selectedTag == null,
-                  onSelected: (_) => onTagSelected(null),
-                ),
-                const SizedBox(width: 6),
-                ChoiceChip(
-                  label: Text('With Dreams ($dreamCount)'),
-                  selected: selectedTag == '__has_dream__',
-                  onSelected:
-                      (sel) => onTagSelected(sel ? '__has_dream__' : null),
-                ),
-                const SizedBox(width: 6),
-                for (final tag in kDreamTags) ...[
-                  FilterChip(
-                    avatar: Icon(tag.icon, size: 14, color: tag.color),
-                    label: Text(tag.name),
-                    selected: selectedTag == tag.name,
-                    selectedColor: tag.color.withValues(alpha: 0.25),
-                    onSelected:
-                        (sel) => onTagSelected(sel ? tag.name : null),
-                  ),
-                  const SizedBox(width: 6),
-                ],
-              ],
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            ActionChip(
+              avatar: const Icon(Icons.auto_awesome, size: 16),
+              label: const Text('AI Dream Insights'),
+              onPressed: onAnalyzeTap,
             ),
-          ),
-        ],
+            const SizedBox(width: 8),
+            ChoiceChip(
+              label: Text('All Dreams (${allDreams.length})'),
+              selected: selectedTag == null,
+              onSelected: (_) => onTagSelected(null),
+            ),
+            const SizedBox(width: 6),
+            for (final tag in kDreamTags) ...[
+              FilterChip(
+                avatar: Icon(tag.icon, size: 14, color: tag.color),
+                label: Text(tag.name),
+                selected: selectedTag == tag.name,
+                selectedColor: tag.color.withValues(alpha: 0.25),
+                onSelected: (sel) => onTagSelected(sel ? tag.name : null),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ],
+        ),
       ),
     );
   }
 }
 
 class _JournalList extends StatelessWidget {
-  const _JournalList({required this.rows});
+  const _JournalList({required this.rows, this.emptyText = 'No entries found.'});
 
   final List<_JournalRow> rows;
+  final String emptyText;
 
   @override
   Widget build(BuildContext context) {
     if (rows.isEmpty) {
-      return const Center(child: Text('No entries found.'));
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            emptyText,
+            style: const TextStyle(color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
     }
 
     return ListView.separated(
@@ -402,6 +693,8 @@ class _JournalList extends StatelessWidget {
       separatorBuilder: (_, __) => const Divider(height: 0),
       itemBuilder: (ctx, i) {
         final row = rows[i];
+        final theme = Theme.of(ctx);
+
         return ListTile(
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 16,
@@ -411,11 +704,15 @@ class _JournalList extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
-                row.isSleep ? Icons.bedtime : Icons.mood,
+                row.isDream
+                    ? Icons.nights_stay
+                    : (row.isSleep ? Icons.bedtime : Icons.mood),
                 color:
-                    row.isSleep
-                        ? Theme.of(ctx).colorScheme.primary
-                        : Theme.of(ctx).colorScheme.secondary,
+                    row.isDream
+                        ? Colors.purple
+                        : (row.isSleep
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.secondary),
               ),
               const SizedBox(height: 4),
               Text(
@@ -426,41 +723,66 @@ class _JournalList extends StatelessWidget {
             ],
           ),
           title:
-              row.isSleep && row.sleep != null
+              row.isDream
                   ? Row(
                     children: [
-                      Text(
-                        '${row.sleep!.hoursSlept.toStringAsFixed(1)}h',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
+                      Expanded(
+                        child: Text(
+                          row.dreamTitle.isNotEmpty
+                              ? row.dreamTitle
+                              : 'Dream Entry',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Quality ${row.sleep!.quality}/5',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(
-                            ctx,
-                          ).colorScheme.onSurface.withValues(alpha: 0.7),
-                        ),
-                      ),
-                      if (row.sleep!.dreamClarity != null) ...[
-                        const SizedBox(width: 8),
-                        Text(
-                          '· Clarity ${row.sleep!.dreamClarity}/5',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(
-                              ctx,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
+                      if (row.dreamClarity != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'Clarity ${row.dreamClarity}/5',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.purple,
+                            ),
                           ),
                         ),
                       ],
                     ],
                   )
-                  : null,
+                  : (row.isSleep && row.sleep != null
+                      ? Row(
+                        children: [
+                          Text(
+                            '${row.sleep!.hoursSlept.toStringAsFixed(1)}h',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Quality ${row.sleep!.quality}/5',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurface.withValues(
+                                alpha: 0.7,
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                      : null),
           subtitle: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -468,22 +790,22 @@ class _JournalList extends StatelessWidget {
               const SizedBox(height: 4),
               if (row.miniBars.isNotEmpty) MiniBarGraph(row.miniBars),
               if (row.dreamTags.isNotEmpty ||
-                  (row.isSleep && (row.sleep?.hasAiChat ?? false))) ...[
+                  (row.isDream && (row.sleep?.hasAiChat ?? false))) ...[
                 const SizedBox(height: 6),
                 Wrap(
                   spacing: 4,
                   runSpacing: 4,
                   children: [
-                    if (row.isSleep && (row.sleep?.hasAiChat ?? false))
+                    if (row.isDream && (row.sleep?.hasAiChat ?? false))
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 6,
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Theme.of(
-                            ctx,
-                          ).colorScheme.secondary.withValues(alpha: 0.18),
+                          color: theme.colorScheme.secondary.withValues(
+                            alpha: 0.18,
+                          ),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(
@@ -492,7 +814,7 @@ class _JournalList extends StatelessWidget {
                             Icon(
                               Icons.auto_awesome,
                               size: 11,
-                              color: Theme.of(ctx).colorScheme.secondary,
+                              color: theme.colorScheme.secondary,
                             ),
                             const SizedBox(width: 3),
                             const Text(
@@ -504,7 +826,7 @@ class _JournalList extends StatelessWidget {
                       ),
                     for (final tagName in row.dreamTags)
                       Builder(
-                        builder: (context) {
+                        builder: (_) {
                           final def = getDreamTagDef(tagName);
                           return Container(
                             padding: const EdgeInsets.symmetric(
@@ -542,14 +864,12 @@ class _JournalList extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 13,
                       fontStyle:
-                          row.preview.startsWith('(')
-                              ? FontStyle.italic
-                              : null,
+                          row.preview.startsWith('(') ? FontStyle.italic : null,
                       color:
                           row.preview.startsWith('(')
-                              ? Theme.of(
-                                ctx,
-                              ).colorScheme.onSurface.withValues(alpha: 0.6)
+                              ? theme.colorScheme.onSurface.withValues(
+                                alpha: 0.6,
+                              )
                               : null,
                     ),
                   ),
@@ -557,7 +877,14 @@ class _JournalList extends StatelessWidget {
             ],
           ),
           onTap: () {
-            if (row.isSleep) {
+            if (row.isDream) {
+              Navigator.push(
+                ctx,
+                MaterialPageRoute(
+                  builder: (_) => DreamDetailScreen(entry: row.sleep!),
+                ),
+              );
+            } else if (row.isSleep) {
               Navigator.push(
                 ctx,
                 MaterialPageRoute(
@@ -584,24 +911,44 @@ class _JournalRow {
     : sleep = null,
       date = mood!.timestamp,
       preview = mood.notes?.trim().split('\n').first ?? '',
+      dreamTitle = '',
       dreamTags = const [],
+      dreamClarity = null,
       isSleep = false,
+      isDream = false,
       miniBars = _generateMoodBars(mood, metricDefs);
 
   _JournalRow.sleep(this.sleep)
     : mood = null,
       date = sleep!.date,
-      preview = sleep.dreamPreview,
-      dreamTags = sleep.dreamTags,
+      preview = 'Slept ${sleep.hoursSlept.toStringAsFixed(1)}h · Quality ${sleep.quality}/5',
+      dreamTitle = '',
+      dreamTags = const [],
+      dreamClarity = null,
       isSleep = true,
+      isDream = false,
       miniBars = _generateSleepBars(sleep);
+
+  _JournalRow.dream(this.sleep)
+    : mood = null,
+      date = sleep!.date,
+      preview = sleep.dreamPreview,
+      dreamTitle = sleep.parsedDream.title ?? '',
+      dreamTags = sleep.dreamTags,
+      dreamClarity = sleep.dreamClarity,
+      isSleep = false,
+      isDream = true,
+      miniBars = const [];
 
   final MoodEntry? mood;
   final SleepEntry? sleep;
   final DateTime date;
   final String preview;
+  final String dreamTitle;
   final List<String> dreamTags;
+  final int? dreamClarity;
   final bool isSleep;
+  final bool isDream;
   final List<(String, double, Color)> miniBars;
 
   static List<(String, double, Color)> _generateMoodBars(
@@ -630,25 +977,29 @@ class _JournalRow {
   }
 }
 
-class SleepDetailScreen extends ConsumerStatefulWidget {
-  const SleepDetailScreen({required this.entry, super.key});
+// ─────────────────────────────────────────────────────────────────────────────
+// DREAM DETAIL SCREEN (Selectable Text, Copy Dream Button, AI Dream Analysis)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class DreamDetailScreen extends ConsumerStatefulWidget {
+  const DreamDetailScreen({required this.entry, super.key});
   final SleepEntry entry;
 
   @override
-  ConsumerState<SleepDetailScreen> createState() => _SleepDetailScreenState();
+  ConsumerState<DreamDetailScreen> createState() => _DreamDetailScreenState();
 }
 
-class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
+class _DreamDetailScreenState extends ConsumerState<DreamDetailScreen> {
   final TextEditingController _questionController = TextEditingController();
   bool _isLoadingAi = false;
   String? _transientNotice;
   String _lensLabel = 'Psychological & Sleep Science';
 
   static const _quickQuestions = [
-    'What could the symbols in this dream mean?',
-    'Could my active supplements affect this dream?',
-    'How does this sleep relate to my recent mood?',
-    'Any tips for deeper sleep tonight?',
+    'What could the key symbols in this dream mean?',
+    'What emotional tone or narrative arc stands out?',
+    'How does this reflect my current daytime state or subconscious mind?',
+    'Any reflection prompts to explore this dream deeper?',
   ];
 
   @override
@@ -673,12 +1024,49 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
     super.dispose();
   }
 
+  void _copyDreamToClipboard(SleepEntry entry) {
+    final parsed = entry.parsedDream;
+    final dateStr = DateFormat.yMMMd().format(entry.date);
+    final buffer = StringBuffer();
+
+    if (parsed.title != null && parsed.title!.isNotEmpty) {
+      buffer.writeln('Dream: ${parsed.title!} ($dateStr)');
+    } else {
+      buffer.writeln('Dream Entry ($dateStr)');
+    }
+
+    if (parsed.tags.isNotEmpty || parsed.clarity != null) {
+      final parts = <String>[];
+      if (parsed.tags.isNotEmpty) parts.add('Tags: ${parsed.tags.join(', ')}');
+      if (parsed.clarity != null) parts.add('Clarity: ${parsed.clarity}/5');
+      buffer.writeln(parts.join(' · '));
+    }
+    buffer.writeln();
+
+    if (parsed.text.isNotEmpty) {
+      buffer.writeln(parsed.text);
+    } else {
+      buffer.writeln('(No narrative recorded)');
+    }
+
+    if (parsed.aiChat.isNotEmpty) {
+      buffer.writeln();
+      buffer.writeln('--- AI Dream Analysis ---');
+      for (final msg in parsed.aiChat) {
+        buffer.writeln('${msg.isUser ? 'User' : 'Gemini'}: ${msg.text}');
+      }
+    }
+
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    showStyledMedToast(context, message: 'Dream copied to clipboard!');
+  }
+
   Future<void> _deleteEntry() async {
     final ok = await showDialog<bool>(
       context: context,
       builder:
           (_) => AlertDialog(
-            title: const Text('Delete sleep entry?'),
+            title: const Text('Delete dream entry?'),
             content: const Text('This cannot be undone.'),
             actions: [
               TextButton(
@@ -719,22 +1107,12 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
       _transientNotice = null;
     });
 
-    final db = ref.read(dbProvider);
-    final since = currentEntry.date.subtract(const Duration(days: 14));
-    final recentMoods = await db.moodEntriesSince(since);
-    final recentSleeps = await db.sleepEntriesSince(since);
-    final activeSubstances = await db.substancesActiveSince(since);
-
     final result = await GeminiAPI.instance.analyzeDreamEntry(
       entry: currentEntry,
-      recentMoods: recentMoods,
-      recentSleeps: recentSleeps,
-      activeSubstances: activeSubstances,
     );
 
     if (!mounted) return;
 
-    // Only persist if it's a valid analysis (not the missing API key prompt)
     if (!result.contains('API Key Required') && !result.startsWith('⚠️')) {
       final newChat = [
         DreamChatMessage(
@@ -775,7 +1153,6 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
       timestamp: DateTime.now(),
     );
 
-    // Save the user's question immediately so it appears in the thread
     final withUserMsg = [...existingChat, userMsg];
     await _persistChat(currentEntry, withUserMsg);
 
@@ -785,19 +1162,10 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
       _transientNotice = null;
     });
 
-    final db = ref.read(dbProvider);
-    final since = currentEntry.date.subtract(const Duration(days: 14));
-    final recentMoods = await db.moodEntriesSince(since);
-    final recentSleeps = await db.sleepEntriesSince(since);
-    final activeSubstances = await db.substancesActiveSince(since);
-
     final reply = await GeminiAPI.instance.continueDreamChat(
       entry: currentEntry,
       history: existingChat,
       userQuestion: question,
-      recentMoods: recentMoods,
-      recentSleeps: recentSleeps,
-      activeSubstances: activeSubstances,
     );
 
     if (!mounted) return;
@@ -847,16 +1215,21 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sleep & Dream Entry'),
+        title: const Text('Dream Entry'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.copy_rounded),
+            tooltip: 'Copy dream to clipboard',
+            onPressed: () => _copyDreamToClipboard(currentEntry),
+          ),
+          IconButton(
             icon: const Icon(Icons.edit),
-            tooltip: 'Edit',
+            tooltip: 'Edit dream',
             onPressed: () {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => EditSleepEntryScreen(entry: currentEntry),
+                  builder: (_) => EditDreamEntryScreen(entry: currentEntry),
                 ),
               );
             },
@@ -871,29 +1244,37 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text(
-            dateFmt.format(currentEntry.date),
-            style: theme.textTheme.titleLarge,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                dateFmt.format(currentEntry.date),
+                style: theme.textTheme.titleMedium,
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.copy, size: 15),
+                label: const Text('Copy Dream'),
+                onPressed: () => _copyDreamToClipboard(currentEntry),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
 
-          // Summary metric cards
+          // Title & badges
+          if (dream.title != null && dream.title!.isNotEmpty) ...[
+            SelectableText(
+              dream.title!,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
           Wrap(
-            spacing: 10,
-            runSpacing: 10,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              _StatBadge(
-                icon: Icons.schedule,
-                label: 'Hours Slept',
-                value: '${currentEntry.hoursSlept.toStringAsFixed(1)} hrs',
-                color: Colors.indigo,
-              ),
-              _StatBadge(
-                icon: Icons.star_rounded,
-                label: 'Sleep Quality',
-                value: sleepQualityLabel(currentEntry.quality),
-                color: Colors.green,
-              ),
               if (dream.clarity != null)
                 _StatBadge(
                   icon: Icons.visibility_outlined,
@@ -901,12 +1282,44 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                   value: dreamClarityLabel(dream.clarity!),
                   color: Colors.purple,
                 ),
+              if (currentEntry.hoursSlept > 0)
+                _StatBadge(
+                  icon: Icons.bedtime_outlined,
+                  label: 'Slept',
+                  value: '${currentEntry.hoursSlept.toStringAsFixed(1)} hrs',
+                  color: Colors.indigo,
+                ),
             ],
           ),
 
+          if (dream.tags.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tagName in dream.tags)
+                  Builder(
+                    builder: (_) {
+                      final def = getDreamTagDef(tagName);
+                      return Chip(
+                        visualDensity: VisualDensity.compact,
+                        avatar: Icon(def.icon, size: 15, color: def.color),
+                        label: Text(
+                          def.name,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        backgroundColor: def.color.withValues(alpha: 0.15),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ],
+
           const SizedBox(height: 16),
 
-          // Dream Journal Card
+          // Dream Journal Narrative Card (Selectable text)
           Card(
             elevation: 1,
             child: Padding(
@@ -915,62 +1328,47 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Icon(
-                        Icons.nights_stay,
-                        color: theme.colorScheme.primary,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          dream.title ?? 'Dream Journal',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.nights_stay,
+                            color: theme.colorScheme.primary,
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Dream Narrative',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 18),
+                        tooltip: 'Copy narrative text',
+                        onPressed: () {
+                          if (dream.text.isNotEmpty) {
+                            Clipboard.setData(ClipboardData(text: dream.text));
+                            showStyledMedToast(
+                              context,
+                              message: 'Narrative copied!',
+                            );
+                          }
+                        },
                       ),
                     ],
                   ),
-                  if (dream.tags.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: [
-                        for (final tagName in dream.tags)
-                          Builder(
-                            builder: (_) {
-                              final def = getDreamTagDef(tagName);
-                              return Chip(
-                                visualDensity: VisualDensity.compact,
-                                avatar: Icon(
-                                  def.icon,
-                                  size: 15,
-                                  color: def.color,
-                                ),
-                                label: Text(
-                                  def.name,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                                backgroundColor: def.color.withValues(
-                                  alpha: 0.15,
-                                ),
-                              );
-                            },
-                          ),
-                      ],
-                    ),
-                  ],
                   const SizedBox(height: 12),
-                  Text(
+                  SelectableText(
                     dream.text.isNotEmpty
                         ? dream.text
-                        : 'No dream narrative recorded for this night.',
+                        : 'No dream narrative recorded for this entry.',
                     style: TextStyle(
                       fontSize: 16,
-                      height: 1.4,
-                      fontStyle:
-                          dream.text.isEmpty ? FontStyle.italic : null,
+                      height: 1.5,
+                      fontStyle: dream.text.isEmpty ? FontStyle.italic : null,
                       color:
                           dream.text.isEmpty
                               ? theme.colorScheme.onSurface.withValues(
@@ -986,7 +1384,7 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
 
           const SizedBox(height: 16),
 
-          // AI Dream & Sleep Analysis + Follow-up Chat Card
+          // AI Dream Analysis & Chat
           Card(
             elevation: 1,
             child: Padding(
@@ -1007,7 +1405,7 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                             const SizedBox(width: 8),
                             Flexible(
                               child: Text(
-                                'AI Dream & Sleep Analysis',
+                                'AI Dream Interpretation',
                                 style: theme.textTheme.titleMedium?.copyWith(
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -1019,7 +1417,7 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                       if (dream.aiChat.isEmpty)
                         ElevatedButton.icon(
                           icon: const Icon(Icons.auto_awesome, size: 16),
-                          label: const Text('Analyze'),
+                          label: const Text('Analyze Dream'),
                           onPressed:
                               _isLoadingAi
                                   ? null
@@ -1038,7 +1436,10 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                                       : () => _runAiDreamAnalysis(currentEntry),
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+                              icon: const Icon(
+                                Icons.delete_sweep_outlined,
+                                size: 20,
+                              ),
                               tooltip: 'Clear AI chat',
                               onPressed:
                                   _isLoadingAi
@@ -1065,9 +1466,11 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                     },
                   ),
                   const SizedBox(height: 8),
-                  if (dream.aiChat.isEmpty && !_isLoadingAi && _transientNotice == null)
+                  if (dream.aiChat.isEmpty &&
+                      !_isLoadingAi &&
+                      _transientNotice == null)
                     Text(
-                      'Generate an AI interpretation of this dream & sleep log, saved directly to this entry so you can ask follow-up questions anytime.',
+                      'Analyze this dream through your selected lens. The interpretation and any follow-up questions you ask are automatically saved to this entry.',
                       style: theme.textTheme.bodySmall,
                     ),
 
@@ -1076,7 +1479,6 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                     MarkdownBody(data: _transientNotice!, selectable: true),
                   ],
 
-                  // Retained conversation messages
                   if (dream.aiChat.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     for (int i = 0; i < dream.aiChat.length; i++) ...[
@@ -1107,7 +1509,6 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                       ),
                     ),
 
-                  // Quick follow-up suggestion chips & chat input
                   if (dream.aiChat.isNotEmpty) ...[
                     if (dream.aiChat.length == 1 && !_isLoadingAi) ...[
                       const SizedBox(height: 4),
@@ -1145,8 +1546,7 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
                             textInputAction: TextInputAction.send,
                             onSubmitted: (_) => _sendFollowUp(currentEntry),
                             decoration: InputDecoration(
-                              hintText:
-                                  'Ask a follow-up question about this dream or sleep…',
+                              hintText: 'Ask a follow-up about this dream…',
                               isDense: true,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(20),
@@ -1174,139 +1574,419 @@ class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SLEEP DETAIL SCREEN (Hours, Quality, Bar Graph, Edit Sleep Only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class SleepDetailScreen extends ConsumerStatefulWidget {
+  const SleepDetailScreen({required this.entry, super.key});
+  final SleepEntry entry;
+
+  @override
+  ConsumerState<SleepDetailScreen> createState() => _SleepDetailScreenState();
+}
+
+class _SleepDetailScreenState extends ConsumerState<SleepDetailScreen> {
+  Future<void> _deleteEntry() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Delete sleep entry?'),
+            content: const Text('This cannot be undone.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  'Delete',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
+          ),
+    );
+    if (ok == true) {
+      await ref.read(dbProvider).deleteSleepEntry(widget.entry.id);
+      if (mounted) Navigator.pop(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sleepsAsync = ref.watch(sleepStreamProvider);
+    final currentEntry =
+        sleepsAsync.value?.firstWhere(
+          (s) => s.id == widget.entry.id,
+          orElse: () => widget.entry,
+        ) ??
+        widget.entry;
+
+    final dateFmt = DateFormat.yMMMd().add_jm();
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Sleep Entry'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            tooltip: 'Edit sleep',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => EditSleepEntryScreen(entry: currentEntry),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Delete',
+            onPressed: _deleteEntry,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            dateFmt.format(currentEntry.date),
+            style: theme.textTheme.titleLarge,
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _StatBadge(
+                icon: Icons.schedule,
+                label: 'Hours Slept',
+                value: '${currentEntry.hoursSlept.toStringAsFixed(1)} hrs',
+                color: Colors.indigo,
+              ),
+              _StatBadge(
+                icon: Icons.star_rounded,
+                label: 'Sleep Quality',
+                value: '${sleepQualityLabel(currentEntry.quality)} (${currentEntry.quality}/5)',
+                color: Colors.green,
+              ),
+            ],
+          ),
           const SizedBox(height: 24),
-
-          // Sleep Bar Graph
-          SizedBox(
-            height: 260,
+          Card(
+            elevation: 1,
             child: Padding(
-              padding: const EdgeInsets.only(right: 12, bottom: 16),
-              child: BarChart(
-                BarChartData(
-                  maxY: 10,
-                  minY: 0,
-                  barGroups: [
-                    BarChartGroupData(
-                      x: 0,
-                      barRods: [
-                        BarChartRodData(
-                          toY:
-                              ((currentEntry.hoursSlept / 12.0) * 10.0).clamp(
-                                0.0,
-                                10.0,
-                              ),
-                          width: 72,
-                          color: Colors.indigo,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                      ],
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sleep Overview',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
-                    BarChartGroupData(
-                      x: 1,
-                      barRods: [
-                        BarChartRodData(
-                          toY:
-                              ((currentEntry.quality / 5.0) * 10.0).clamp(
-                                0.0,
-                                10.0,
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    height: 220,
+                    child: BarChart(
+                      BarChartData(
+                        maxY: 10,
+                        minY: 0,
+                        barGroups: [
+                          BarChartGroupData(
+                            x: 0,
+                            barRods: [
+                              BarChartRodData(
+                                toY: ((currentEntry.hoursSlept / 12.0) * 10.0)
+                                    .clamp(0.0, 10.0),
+                                width: 56,
+                                color: Colors.indigo,
+                                borderRadius: BorderRadius.circular(6),
                               ),
-                          width: 72,
-                          color: Colors.green,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                      ],
-                    ),
-                    if (dream.clarity != null)
-                      BarChartGroupData(
-                        x: 2,
-                        barRods: [
-                          BarChartRodData(
-                            toY:
-                                ((dream.clarity! / 5.0) * 10.0).clamp(
+                            ],
+                          ),
+                          BarChartGroupData(
+                            x: 1,
+                            barRods: [
+                              BarChartRodData(
+                                toY: ((currentEntry.quality / 5.0) * 10.0).clamp(
                                   0.0,
                                   10.0,
                                 ),
-                            width: 72,
-                            color: Colors.purple,
-                            borderRadius: BorderRadius.circular(6),
+                                width: 56,
+                                color: Colors.green,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                            ],
                           ),
                         ],
-                      ),
-                  ],
-                  gridData: FlGridData(show: true),
-                  borderData: FlBorderData(show: false),
-                  titlesData: FlTitlesData(
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 28,
-                        interval: 2,
-                        getTitlesWidget: (value, _) {
-                          final hours = (value * 1.2);
-                          return Text(
-                            '${hours.toStringAsFixed(0)}h',
-                            style: const TextStyle(fontSize: 10),
-                          );
-                        },
-                      ),
-                    ),
-                    rightTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 28,
-                        interval: 2,
-                        getTitlesWidget: (value, _) {
-                          const qualityTicks = {
-                            0: '0',
-                            2: '1',
-                            4: '2',
-                            6: '3',
-                            8: '4',
-                            10: '5',
-                          };
-                          final iv = value.round();
-                          if (qualityTicks.containsKey(iv)) {
-                            return Text(
-                              qualityTicks[iv]!,
-                              style: const TextStyle(fontSize: 10),
-                            );
-                          }
-                          return const SizedBox.shrink();
-                        },
-                      ),
-                    ),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 32,
-                        getTitlesWidget: (value, _) {
-                          final labels = [
-                            'Hours Slept',
-                            'Quality',
-                            'Dream Clarity',
-                          ];
-                          final idx = value.toInt();
-                          if (idx < 0 || idx >= labels.length) {
-                            return const SizedBox.shrink();
-                          }
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Text(
-                              labels[idx],
-                              style: const TextStyle(fontSize: 11),
+                        gridData: const FlGridData(show: true),
+                        borderData: FlBorderData(show: false),
+                        titlesData: FlTitlesData(
+                          leftTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              reservedSize: 34,
+                              interval: 2,
+                              getTitlesWidget: (v, _) => Text(
+                                '${(v * 1.2).toStringAsFixed(0)}h',
+                                style: const TextStyle(fontSize: 10),
+                              ),
                             ),
-                          );
-                        },
+                          ),
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              reservedSize: 28,
+                              getTitlesWidget: (value, _) {
+                                final label = value.toInt() == 0 ? 'Hours' : 'Quality';
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(label, style: const TextStyle(fontSize: 11)),
+                                );
+                              },
+                            ),
+                          ),
+                          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        ),
                       ),
-                    ),
-                    topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false),
                     ),
                   ),
-                ),
+                ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EditDreamEntryScreen extends ConsumerStatefulWidget {
+  const EditDreamEntryScreen({required this.entry, super.key});
+  final SleepEntry entry;
+
+  @override
+  ConsumerState<EditDreamEntryScreen> createState() =>
+      _EditDreamEntryScreenState();
+}
+
+class _EditDreamEntryScreenState extends ConsumerState<EditDreamEntryScreen> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _journalController;
+  late double _clarity;
+  late Set<String> _selectedTags;
+
+  @override
+  void initState() {
+    super.initState();
+    final parsed = widget.entry.parsedDream;
+    _titleController = TextEditingController(text: parsed.title ?? '');
+    _journalController = TextEditingController(text: parsed.text);
+    _clarity = (parsed.clarity ?? 3).toDouble();
+    _selectedTags = parsed.tags.toSet();
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _journalController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final existingChat = widget.entry.parsedDream.aiChat;
+    final encodedDream = ParsedDreamJournal(
+      title: _titleController.text,
+      tags: _selectedTags.toList(),
+      clarity: _clarity.toInt(),
+      text: _journalController.text,
+      aiChat: existingChat,
+    ).encode();
+
+    final db = ref.read(dbProvider);
+    await db.updateSleepEntry(
+      widget.entry.copyWith(dreamJournal: drift.Value(encodedDream)),
+    );
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Edit Dream')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          TextFormField(
+            controller: _titleController,
+            decoration: const InputDecoration(
+              labelText: 'Dream Title / Theme',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _journalController,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: 'Dream Narrative',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Characteristics', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final tag in kDreamTags)
+                FilterChip(
+                  avatar: Icon(tag.icon, size: 14, color: tag.color),
+                  label: Text(tag.name),
+                  selected: _selectedTags.contains(tag.name),
+                  selectedColor: tag.color.withValues(alpha: 0.25),
+                  onSelected: (sel) {
+                    setState(() {
+                      if (sel) {
+                        _selectedTags.add(tag.name);
+                      } else {
+                        _selectedTags.remove(tag.name);
+                      }
+                    });
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Recall Clarity'),
+              Text(
+                dreamClarityLabel(_clarity.toInt()),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          Slider(
+            min: 1,
+            max: 5,
+            divisions: 4,
+            value: _clarity,
+            label: dreamClarityLabel(_clarity.toInt()),
+            onChanged: (v) => setState(() => _clarity = v),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('Save Dream Changes'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EditSleepEntryScreen extends ConsumerStatefulWidget {
+  const EditSleepEntryScreen({required this.entry, super.key});
+  final SleepEntry entry;
+
+  @override
+  ConsumerState<EditSleepEntryScreen> createState() =>
+      _EditSleepEntryScreenState();
+}
+
+class _EditSleepEntryScreenState extends ConsumerState<EditSleepEntryScreen> {
+  late double hours;
+  late double quality;
+  late TextEditingController hoursController;
+
+  @override
+  void initState() {
+    super.initState();
+    hours = widget.entry.hoursSlept;
+    quality = widget.entry.quality.toDouble();
+    hoursController = TextEditingController(text: hours.toString());
+  }
+
+  @override
+  void dispose() {
+    hoursController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final parsedHours = double.tryParse(hoursController.text) ?? hours;
+    final db = ref.read(dbProvider);
+    await db.updateSleepEntry(
+      widget.entry.copyWith(
+        hoursSlept: parsedHours,
+        quality: quality.toInt(),
+      ),
+    );
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Edit Sleep Entry')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          TextFormField(
+            controller: hoursController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Hours Slept',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (val) => hours = double.tryParse(val) ?? hours,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Sleep Quality', style: theme.textTheme.titleSmall),
+              Text(
+                sleepQualityLabel(quality.toInt()),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            min: 1,
+            max: 5,
+            divisions: 4,
+            value: quality,
+            label: sleepQualityLabel(quality.toInt()),
+            onChanged: (val) => setState(() => quality = val),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('Save Sleep Changes'),
           ),
         ],
       ),
@@ -1341,7 +2021,7 @@ class _DreamChatBubble extends StatelessWidget {
               bottomRight: Radius.circular(4),
             ),
           ),
-          child: Text(
+          child: SelectableText(
             message.text,
             style: TextStyle(color: theme.colorScheme.onPrimaryContainer),
           ),
@@ -1367,27 +2047,39 @@ class _DreamChatBubble extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isInitialAnalysis) ...[
-            Row(
-              children: [
-                Icon(
-                  Icons.auto_awesome,
-                  size: 13,
-                  color: theme.colorScheme.secondary,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  'Gemini',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.auto_awesome,
+                    size: 13,
                     color: theme.colorScheme.secondary,
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-          ],
+                  const SizedBox(width: 4),
+                  Text(
+                    'Gemini',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.secondary,
+                    ),
+                  ),
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 14),
+                tooltip: 'Copy response',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: message.text));
+                  showStyledMedToast(context, message: 'Response copied!');
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
           MarkdownBody(data: message.text, selectable: true),
         ],
       ),
@@ -1445,202 +2137,6 @@ class _StatBadge extends StatelessWidget {
   }
 }
 
-class EditSleepEntryScreen extends ConsumerStatefulWidget {
-  const EditSleepEntryScreen({required this.entry, super.key});
-  final SleepEntry entry;
-
-  @override
-  ConsumerState<EditSleepEntryScreen> createState() =>
-      _EditSleepEntryScreenState();
-}
-
-class _EditSleepEntryScreenState extends ConsumerState<EditSleepEntryScreen> {
-  late double hours;
-  late double quality;
-  late double clarity;
-  late bool includeClarity;
-  late TextEditingController hoursController;
-  late TextEditingController titleController;
-  late TextEditingController journalController;
-  late Set<String> selectedTags;
-
-  @override
-  void initState() {
-    super.initState();
-    final parsed = widget.entry.parsedDream;
-    hours = widget.entry.hoursSlept;
-    quality = widget.entry.quality.toDouble();
-    clarity = (parsed.clarity ?? 3).toDouble();
-    includeClarity = parsed.clarity != null;
-    selectedTags = parsed.tags.toSet();
-    hoursController = TextEditingController(text: hours.toString());
-    titleController = TextEditingController(text: parsed.title ?? '');
-    journalController = TextEditingController(text: parsed.text);
-  }
-
-  @override
-  void dispose() {
-    hoursController.dispose();
-    titleController.dispose();
-    journalController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final parsedHours = double.tryParse(hoursController.text) ?? hours;
-    final hasDream =
-        titleController.text.trim().isNotEmpty ||
-        journalController.text.trim().isNotEmpty ||
-        selectedTags.isNotEmpty ||
-        includeClarity;
-
-    final existingAiChat = widget.entry.parsedDream.aiChat;
-    final encodedDream =
-        ParsedDreamJournal(
-          title: titleController.text,
-          tags: selectedTags.toList(),
-          clarity: hasDream && includeClarity ? clarity.toInt() : null,
-          text: journalController.text,
-          aiChat: existingAiChat,
-        ).encode();
-
-    final db = ref.read(dbProvider);
-    await db.updateSleepEntry(
-      widget.entry.copyWith(
-        hoursSlept: parsedHours,
-        quality: quality.toInt(),
-        dreamJournal: drift.Value(encodedDream),
-      ),
-    );
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(title: const Text('Edit Sleep & Dream Entry')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          TextFormField(
-            controller: hoursController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: 'Hours Slept',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (val) => hours = double.tryParse(val) ?? hours,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Sleep Quality', style: theme.textTheme.titleSmall),
-              Text(
-                sleepQualityLabel(quality.toInt()),
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.primary,
-                ),
-              ),
-            ],
-          ),
-          Slider(
-            min: 1,
-            max: 5,
-            divisions: 4,
-            value: quality,
-            label: sleepQualityLabel(quality.toInt()),
-            onChanged: (val) => setState(() => quality = val),
-          ),
-          const Divider(height: 24),
-          Text('Dream Journal', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: titleController,
-            decoration: const InputDecoration(
-              labelText: 'Dream Title / Theme',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: journalController,
-            maxLines: 5,
-            decoration: const InputDecoration(
-              labelText: 'Dream Narrative',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text('Dream Characteristics', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final tag in kDreamTags)
-                FilterChip(
-                  avatar: Icon(tag.icon, size: 15, color: tag.color),
-                  label: Text(tag.name),
-                  selected: selectedTags.contains(tag.name),
-                  selectedColor: tag.color.withValues(alpha: 0.25),
-                  onSelected: (sel) {
-                    setState(() {
-                      if (sel) {
-                        selectedTags.add(tag.name);
-                        includeClarity = true;
-                      } else {
-                        selectedTags.remove(tag.name);
-                      }
-                    });
-                  },
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Track Dream Recall Clarity'),
-            value: includeClarity,
-            onChanged: (v) => setState(() => includeClarity = v),
-          ),
-          if (includeClarity) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Recall Clarity'),
-                Text(
-                  dreamClarityLabel(clarity.toInt()),
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.secondary,
-                  ),
-                ),
-              ],
-            ),
-            Slider(
-              min: 1,
-              max: 5,
-              divisions: 4,
-              value: clarity,
-              label: dreamClarityLabel(clarity.toInt()),
-              onChanged: (val) => setState(() => clarity = val),
-            ),
-          ],
-          const SizedBox(height: 24),
-          ElevatedButton.icon(
-            onPressed: _save,
-            icon: const Icon(Icons.save),
-            label: const Text('Save Changes'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class MiniBarGraph extends StatelessWidget {
   final List<(String, double, Color)> bars;
 
@@ -1669,35 +2165,13 @@ class MiniBarGraph extends StatelessWidget {
                 ],
               ),
           ],
-          gridData: FlGridData(show: false),
+          gridData: const FlGridData(show: false),
           borderData: FlBorderData(show: false),
-          titlesData: FlTitlesData(
-            leftTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            rightTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            topTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: false,
-                getTitlesWidget: (value, _) {
-                  if (value.toInt() < bars.length) {
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        bars[value.toInt()].$1,
-                        style: const TextStyle(fontSize: 9),
-                      ),
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
-              ),
-            ),
+          titlesData: const FlTitlesData(
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
           ),
         ),
       ),

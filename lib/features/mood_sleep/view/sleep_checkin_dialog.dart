@@ -5,6 +5,7 @@ import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
+/// Standalone Sleep Check-In Dialog (Hours Slept + Sleep Quality only).
 class SleepCheckinDialog extends ConsumerStatefulWidget {
   const SleepCheckinDialog({super.key});
 
@@ -15,42 +16,30 @@ class SleepCheckinDialog extends ConsumerStatefulWidget {
 class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
   final _formKey = GlobalKey<FormState>();
   final _hours = TextEditingController(text: '7.5');
-  final _dreamTitle = TextEditingController();
-  final _dreams = TextEditingController();
   double _quality = 3;
-  double _dreamClarity = 3;
-  bool _includeClarity = false;
-  final Set<String> _selectedTags = {};
 
   static const _quickHours = [6.0, 7.0, 7.5, 8.0, 9.0];
 
   @override
   void dispose() {
     _hours.dispose();
-    _dreamTitle.dispose();
-    _dreams.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final hasDreamInput =
-        _dreamTitle.text.trim().isNotEmpty ||
-        _dreams.text.trim().isNotEmpty ||
-        _selectedTags.isNotEmpty ||
-        _includeClarity;
 
     return AlertDialog(
       title: const Row(
         children: [
           Icon(Icons.bedtime_outlined),
           SizedBox(width: 8),
-          Expanded(child: Text('Track last night’s sleep')),
+          Expanded(child: Text('Sleep Check-In')),
         ],
       ),
       content: SizedBox(
-        width: 400,
+        width: 380,
         child: Form(
           key: _formKey,
           child: SingleChildScrollView(
@@ -87,9 +76,7 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                       ActionChip(
                         visualDensity: VisualDensity.compact,
                         label: Text(
-                          h == h.roundToDouble()
-                              ? '${h.toInt()}h'
-                              : '${h}h',
+                          h == h.roundToDouble() ? '${h.toInt()}h' : '${h}h',
                           style: const TextStyle(fontSize: 12),
                         ),
                         onPressed: () {
@@ -125,25 +112,83 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                   label: sleepQualityLabel(_quality.toInt()),
                   onChanged: (v) => setState(() => _quality = v),
                 ),
-                const Divider(height: 20),
-                Row(
-                  children: [
-                    Icon(
-                      Icons.nights_stay_outlined,
-                      size: 18,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Dream Journal (optional)',
-                      style: theme.textTheme.titleSmall,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            if (!_formKey.currentState!.validate()) return;
+            final db = ref.read(dbProvider);
+            await db.insertSleep(
+              SleepEntriesCompanion.insert(
+                date: DateTime.now(),
+                hoursSlept: double.parse(_hours.text),
+                quality: drift.Value(_quality.toInt()),
+                dreamJournal: const drift.Value(null),
+              ),
+            );
+            if (mounted) Navigator.pop(context);
+          },
+          child: const Text('Save Sleep'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Standalone Dream Check-In Dialog (Dream Title, Narrative, Characteristics, Clarity only — no sleep input required).
+class DreamCheckinDialog extends ConsumerStatefulWidget {
+  const DreamCheckinDialog({super.key});
+
+  @override
+  ConsumerState<DreamCheckinDialog> createState() => _DreamCheckinDialogState();
+}
+
+class _DreamCheckinDialogState extends ConsumerState<DreamCheckinDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _dreamTitle = TextEditingController();
+  final _dreams = TextEditingController();
+  double _dreamClarity = 3;
+  final Set<String> _selectedTags = {};
+
+  @override
+  void dispose() {
+    _dreamTitle.dispose();
+    _dreams.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.nights_stay_outlined),
+          SizedBox(width: 8),
+          Expanded(child: Text('Dream Check-In')),
+        ],
+      ),
+      content: SizedBox(
+        width: 400,
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.only(top: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 TextFormField(
                   controller: _dreamTitle,
-                  onChanged: (_) => setState(() {}),
                   decoration: const InputDecoration(
                     labelText: 'Dream title / theme',
                     hintText: 'e.g., Flying over crystal mountains',
@@ -151,19 +196,26 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                     isDense: true,
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
                 TextFormField(
                   controller: _dreams,
-                  onChanged: (_) => setState(() {}),
-                  maxLines: 3,
+                  maxLines: 4,
                   decoration: const InputDecoration(
                     labelText: 'Dream narrative & symbols',
                     hintText:
                         'What happened? How did it feel? Any recurring people or symbols?',
                     border: OutlineInputBorder(),
                   ),
+                  validator: (v) {
+                    if ((v == null || v.trim().isEmpty) &&
+                        _dreamTitle.text.trim().isEmpty &&
+                        _selectedTags.isEmpty) {
+                      return 'Please enter a dream narrative, title, or tag';
+                    }
+                    return null;
+                  },
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
                 Text(
                   'Dream characteristics',
                   style: theme.textTheme.labelMedium,
@@ -187,7 +239,6 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                           setState(() {
                             if (selected) {
                               _selectedTags.add(tag.name);
-                              _includeClarity = true;
                             } else {
                               _selectedTags.remove(tag.name);
                             }
@@ -196,35 +247,35 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                       ),
                   ],
                 ),
-                if (hasDreamInput) ...[
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Dream recall clarity', style: theme.textTheme.labelMedium),
-                      Text(
-                        dreamClarityLabel(_dreamClarity.toInt()),
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.secondary,
-                          fontWeight: FontWeight.w600,
-                        ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Dream recall clarity',
+                      style: theme.textTheme.labelMedium,
+                    ),
+                    Text(
+                      dreamClarityLabel(_dreamClarity.toInt()),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.secondary,
+                        fontWeight: FontWeight.w600,
                       ),
-                    ],
-                  ),
-                  Slider(
-                    min: 1,
-                    max: 5,
-                    divisions: 4,
-                    value: _dreamClarity,
-                    label: dreamClarityLabel(_dreamClarity.toInt()),
-                    onChanged: (v) {
-                      setState(() {
-                        _dreamClarity = v;
-                        _includeClarity = true;
-                      });
-                    },
-                  ),
-                ],
+                    ),
+                  ],
+                ),
+                Slider(
+                  min: 1,
+                  max: 5,
+                  divisions: 4,
+                  value: _dreamClarity,
+                  label: dreamClarityLabel(_dreamClarity.toInt()),
+                  onChanged: (v) {
+                    setState(() {
+                      _dreamClarity = v;
+                    });
+                  },
+                ),
               ],
             ),
           ),
@@ -233,7 +284,7 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Skip'),
+          child: const Text('Cancel'),
         ),
         ElevatedButton(
           onPressed: () async {
@@ -242,7 +293,7 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
                 ParsedDreamJournal(
                   title: _dreamTitle.text,
                   tags: _selectedTags.toList(),
-                  clarity: hasDreamInput ? _dreamClarity.toInt() : null,
+                  clarity: _dreamClarity.toInt(),
                   text: _dreams.text,
                 ).encode();
 
@@ -250,14 +301,14 @@ class _SleepCheckinDialogState extends ConsumerState<SleepCheckinDialog> {
             await db.insertSleep(
               SleepEntriesCompanion.insert(
                 date: DateTime.now(),
-                hoursSlept: double.parse(_hours.text),
-                quality: drift.Value(_quality.toInt()),
+                hoursSlept: 0.0,
+                quality: const drift.Value(3),
                 dreamJournal: drift.Value(encodedDream),
               ),
             );
             if (mounted) Navigator.pop(context);
           },
-          child: const Text('Save'),
+          child: const Text('Save Dream'),
         ),
       ],
     );

@@ -1,11 +1,11 @@
 {
-    "name": "libretrac",
-    "short_name": "libretrac",
+    "name": "LibreTrac - Health & Mood Tracker",
+    "short_name": "LibreTrac",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#000000",
-    "theme_color": "#000000",
-    "description": "A new Flutter project.",
+    "background_color": "#161618",
+    "theme_color": "#161618",
+    "description": "Private, local-first mood, sleep, dream, medication, and cognitive tracking.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
@@ -30,6 +30,11 @@
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "maskable"
+        },
+        {
+            "src": "icons/apple-touch-icon.png",
+            "sizes": "180x180",
+            "type": "image/png"
         }
     ]
 }

@@ -1,40 +1,143 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="LibreTrac — Private, local-first mood, sleep, dream, medication, and cognitive tracking.">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 
-  <!-- iOS meta tags & icons -->
+  <!-- OpenGraph / Social Media -->
+  <meta property="og:title" content="LibreTrac — Health & Mood Tracker">
+  <meta property="og:description" content="Private, local-first mood, sleep, dream, medication, and cognitive tracking.">
+  <meta property="og:image" content="icons/Icon-512.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="LibreTrac — Health & Mood Tracker">
+  <meta name="twitter:description" content="Private, local-first mood, sleep, dream, medication, and cognitive tracking.">
+  <meta name="twitter:image" content="icons/Icon-512.png">
+
+  <!-- Mobile Web App & Theme Color (Dark Grey / Soft Black #161618) -->
   <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#000000">
-  <meta name="apple-mobile-web-app-title" content="libretrac">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <meta name="apple-mobile-web-app-title" content="LibreTrac">
+  <meta name="theme-color" content="#161618" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#161618">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
 
   <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/Icon-192.png"/>
 
-  <title>libretrac</title>
+  <title>LibreTrac — Mood, Sleep, Dream & Health Tracker</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    body {
+      background-color: #161618;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    #loading-container {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background-color: #161618;
+      z-index: 999999;
+      transition: opacity 0.35s ease;
+      user-select: none;
+    }
+    .loading-logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+      animation: pulse 2.2s infinite ease-in-out;
+    }
+    .loading-title {
+      margin-top: 18px;
+      font-size: 19px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      color: #f4f4f5;
+    }
+    .loading-spinner {
+      margin-top: 20px;
+      width: 22px;
+      height: 22px;
+      border: 2.5px solid rgba(255, 255, 255, 0.12);
+      border-top-color: #a855f7;
+      border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 0.95; }
+      50% { transform: scale(1.04); opacity: 1; }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+
+  <script>
+    // LibreTrac Safe Web Cache & Service Worker Reset
+    // Unregisters stale flutter_service_worker.js and clears window.caches (Cache Storage).
+    // Note: window.localStorage (SharedPreferences) and IndexedDB (Drift database)
+    // are 100% PRESERVED and never touched.
+    window.resetLibreTracWebCache = async function() {
+      try {
+        if ('serviceWorker' in navigator) {
+          var regs = await navigator.serviceWorker.getRegistrations();
+          for (var i = 0; i < regs.length; i++) {
+            await regs[i].unregister();
+          }
+        }
+        if ('caches' in window) {
+          var keys = await caches.keys();
+          for (var j = 0; j < keys.length; j++) {
+            await caches.delete(keys[j]);
+          }
+        }
+      } catch (e) {
+        console.warn('Error clearing caches:', e);
+      }
+      window.location.reload(true);
+    };
+
+    // Auto-unregister legacy service worker if present so existing users automatically
+    // receive the updated app version without being trapped in stale ServiceWorker cache.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for (var i = 0; i < registrations.length; i++) {
+          registrations[i].unregister();
+        }
+      });
+    }
+
+    // Dismiss loading splash on first frame render
+    window.addEventListener('flutter-first-frame', function () {
+      var el = document.getElementById('loading-container');
+      if (el) {
+        el.style.opacity = '0';
+        setTimeout(function() { el.remove(); }, 350);
+      }
+    });
+  </script>
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <div id="loading-container">
+    <img src="favicon.png" alt="LibreTrac Logo" class="loading-logo" />
+    <div class="loading-title">LibreTrac</div>
+    <div class="loading-spinner"></div>
+  </div>
+  <script src="flutter_bootstrap.js?v=3.1.0" async></script>
 </body>
 </html>

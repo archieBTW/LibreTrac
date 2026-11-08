@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
@@ -91,6 +92,50 @@ class MoodChartPage extends StatelessWidget {
     return lines;
   }
 
+  Widget _buildTwoRowMetrics(BuildContext context) {
+    if (allMetrics.isEmpty) return const SizedBox.shrink();
+
+    // Split metrics across at most 2 rows so they NEVER wrap onto a 3rd row.
+    final int total = allMetrics.length;
+    final int firstRowCount = total <= 3 ? total : (total / 2).ceil();
+    final List<CustomMetric> row1 = allMetrics.sublist(0, firstRowCount);
+    final List<CustomMetric> row2 =
+        total > firstRowCount
+            ? allMetrics.sublist(firstRowCount)
+            : const <CustomMetric>[];
+
+    Widget buildChipRow(List<CustomMetric> rowMetrics) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (var i = 0; i < rowMetrics.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Flexible(
+              fit: FlexFit.tight,
+              child: _MetricFilterChip(
+                metric: rowMetrics[i],
+                selected: selectedMetrics.contains(rowMetrics[i].name),
+                onSelected:
+                    (val) => onMetricToggle(rowMetrics[i].name, val),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        buildChipRow(row1),
+        if (row2.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          buildChipRow(row2),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSingle = ordered.length == 1;
@@ -100,21 +145,8 @@ class MoodChartPage extends StatelessWidget {
 
     return Column(
       children: [
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          children:
-              allMetrics.map((metric) {
-                final selected = selectedMetrics.contains(metric.name);
-                return FilterChip(
-                  label: Text(metric.name),
-                  selected: selected,
-                  selectedColor: metric.color.withValues(alpha: .30),
-                  onSelected: (value) => onMetricToggle(metric.name, value),
-                );
-              }).toList(),
-        ),
-        const SizedBox(height: 12),
+        _buildTwoRowMetrics(context),
+        const SizedBox(height: 10),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -231,5 +263,170 @@ class MoodChartPage extends StatelessWidget {
     ];
     if (month < 1 || month > 12) return '';
     return months[month - 1];
+  }
+}
+
+class _MetricFilterChip extends StatelessWidget {
+  const _MetricFilterChip({
+    required this.metric,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final CustomMetric metric;
+  final bool selected;
+  final ValueChanged<bool> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color:
+          selected
+              ? metric.color.withValues(alpha: 0.25)
+              : theme.colorScheme.surfaceContainerHighest.withValues(
+                alpha: 0.4,
+              ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color:
+              selected
+                  ? metric.color.withValues(alpha: 0.7)
+                  : Colors.grey.withValues(alpha: 0.3),
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => onSelected(!selected),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.max,
+            children: [
+              Flexible(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      selected ? Icons.check_circle : Icons.circle_outlined,
+                      size: 13,
+                      color: selected ? metric.color : Colors.grey,
+                    ),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: _MarqueeText(
+                        text: metric.name,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              selected ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Auto-scrolling marquee text widget when text overflows its container width.
+class _MarqueeText extends StatefulWidget {
+  const _MarqueeText({
+    required this.text,
+    this.style,
+    this.textAlign = TextAlign.center,
+  });
+
+  final String text;
+  final TextStyle? style;
+  final TextAlign textAlign;
+
+  @override
+  State<_MarqueeText> createState() => _MarqueeTextState();
+}
+
+class _MarqueeTextState extends State<_MarqueeText> {
+  final ScrollController _scrollController = ScrollController();
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _startMarqueeIfNeeded());
+  }
+
+  @override
+  void didUpdateWidget(covariant _MarqueeText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      _timer?.cancel();
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _startMarqueeIfNeeded(),
+      );
+    }
+  }
+
+  void _startMarqueeIfNeeded() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    if (maxScroll <= 0) return;
+
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      if (!mounted || !_scrollController.hasClients) return;
+      final extent = _scrollController.position.maxScrollExtent;
+      if (extent <= 0) return;
+      await _scrollController.animateTo(
+        extent,
+        duration: Duration(milliseconds: (extent * 35).clamp(800, 3000).toInt()),
+        curve: Curves.linear,
+      );
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted || !_scrollController.hasClients) return;
+      await _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          controller: _scrollController,
+          scrollDirection: Axis.horizontal,
+          physics: const NeverScrollableScrollPhysics(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: Text(
+              widget.text,
+              maxLines: 1,
+              softWrap: false,
+              textAlign: widget.textAlign,
+              style: widget.style,
+            ),
+          ),
+        );
+      },
+    );
   }
 }

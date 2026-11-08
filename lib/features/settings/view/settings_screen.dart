@@ -11,6 +11,7 @@ import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/providers/db_provider.dart';
 import 'package:libretrac/providers/theme_provider.dart';
 import 'package:libretrac/services/prefs_service.dart';
+import 'package:libretrac/services/web_cache_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -172,6 +173,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: const Text('Clear cognitive data'),
             onTap: () => _clearCognitive(context),
           ),
+          if (kIsWeb) ...[
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.refresh),
+              title: const Text('Reload Latest Version'),
+              subtitle: const Text(
+                'Clears cached app scripts & service workers. Keeps all check-ins, dreams, and settings intact.',
+              ),
+              onTap: () async {
+                final ok = await _confirm(
+                  context,
+                  'Reload the latest version of LibreTrac? All your data, check-ins, and settings will remain completely intact.',
+                );
+                if (ok) {
+                  await purgeWebCacheAndReload();
+                }
+              },
+            ),
+          ],
           const Divider(),
 
           // -- room for future prefs --
@@ -540,6 +560,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref.read(themeModeProvider.notifier).reload();
       await ref.read(accentColorProvider.notifier).reload();
       await ref.read(medicationDoseLogsProvider.notifier).reload();
+      await ref.read(substanceOrderProvider.notifier).reload();
+      await ref.read(medicationDosesPerDayProvider.notifier).reload();
       await _loadModelPref();
 
       // Force refresh of home screen data

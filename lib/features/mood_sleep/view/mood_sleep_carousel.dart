@@ -39,7 +39,11 @@ class MoodSleepCarousel extends StatelessWidget {
     final mood = orderedMood.where((e) => e.timestamp.isAfter(cutoff)).toList();
     final sleepsW =
         sleepEntries
-            .where((e) => e.date.isAfter(cutoff) || e.createdAt.isAfter(cutoff))
+            .where(
+              (e) =>
+                  e.hoursSlept > 0 &&
+                  (e.date.isAfter(cutoff) || e.createdAt.isAfter(cutoff)),
+            )
             .toList();
 
     final showMoodOverlay = mood.isEmpty;

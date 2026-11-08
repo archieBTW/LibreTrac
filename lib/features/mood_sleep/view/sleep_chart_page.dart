@@ -1,28 +1,18 @@
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:libretrac/core/database/app_database.dart';
 import 'package:libretrac/features/shared/chart/single_metric_line.dart';
 
 class SleepChartPage extends StatelessWidget {
-  const SleepChartPage({required this.entries});
+  const SleepChartPage({required this.entries, super.key});
 
   final List<SleepEntry> entries;
 
-  static const double _qualityScale = 12 / 5; // 2.4 → fits 1-5 onto 0-12
-
   @override
   Widget build(BuildContext context) {
+    // Only plot actual sleep check-ins (hoursSlept > 0), excluding standalone dream-only entries
+    final sleepOnly = entries.where((e) => e.hoursSlept > 0).toList();
     // oldest → newest for a sensible X-axis
-    final ordered = [...entries]..sort((a, b) => a.date.compareTo(b.date));
-
-    final hoursSpots = <FlSpot>[];
-    final qualitySpots = <FlSpot>[];
-
-    for (var i = 0; i < ordered.length; i++) {
-      final e = ordered[i];
-      hoursSpots.add(FlSpot(i.toDouble(), e.hoursSlept));
-      qualitySpots.add(FlSpot(i.toDouble(), e.quality * _qualityScale));
-    }
+    final ordered = [...sleepOnly]..sort((a, b) => a.date.compareTo(b.date));
 
     return Padding(
       padding: const EdgeInsets.only(right: 8),

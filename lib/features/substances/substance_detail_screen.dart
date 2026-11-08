@@ -65,6 +65,15 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
             .watch(medicationDoseLogsProvider)
             .where((l) => l.substanceId == widget.substance.id)
             .toList();
+    final now = DateTime.now();
+    final todayLogs =
+        medLogs.where((l) => isSameCalendarDay(l.takenAt, now)).toList()
+          ..sort((a, b) => a.takenAt.compareTo(b.takenAt));
+    final dosesPerDay = (ref.watch(
+          medicationDosesPerDayProvider,
+        )[widget.substance.id] ??
+        1)
+        .clamp(1, 6);
 
     return Scaffold(
       appBar: AppBar(
@@ -96,6 +105,10 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                   style: Theme.of(ctx).textTheme.titleMedium,
                 ),
               Text(
+                'Daily Frequency: ${dosesPerDay}x / day',
+                style: Theme.of(ctx).textTheme.bodyMedium,
+              ),
+              Text(
                 'Started: ${dateFmt.format(widget.substance.addedAt)}',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
@@ -121,10 +134,12 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            '7-Day Adherence & Doses',
-                            style: Theme.of(ctx).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.bold),
+                          Expanded(
+                            child: Text(
+                              '7-Day Adherence & Doses',
+                              style: Theme.of(ctx).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.bold),
+                            ),
                           ),
                           Row(
                             mainAxisSize: MainAxisSize.min,
@@ -150,12 +165,18 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                                       .read(medicationDoseLogsProvider.notifier)
                                       .logDose(substance: widget.substance);
                                   if (ctx.mounted) {
-                                    ScaffoldMessenger.of(ctx).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
+                                    showStyledMedToast(
+                                      ctx,
+                                      message:
                                           'Logged ${widget.substance.name} at ${timeFmt.format(entry.takenAt)}',
-                                        ),
-                                      ),
+                                      onUndo: () {
+                                        ref
+                                            .read(
+                                              medicationDoseLogsProvider
+                                                  .notifier,
+                                            )
+                                            .deleteLog(entry.id);
+                                      },
                                     );
                                   }
                                 },
@@ -163,6 +184,12 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                             ],
                           ),
                         ],
+                      ),
+                      const SizedBox(height: 12),
+                      DailyDoseMarkersRow(
+                        substance: widget.substance,
+                        todayLogs: todayLogs,
+                        dosesPerDay: dosesPerDay,
                       ),
                       const SizedBox(height: 14),
                       SevenDayAdherenceStrip(
@@ -172,7 +199,7 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                       if (medLogs.isNotEmpty) ...[
                         const Divider(height: 24),
                         const Text(
-                          'Recent Timestamps:',
+                          'Recent Timestamps (tap to edit time):',
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -181,33 +208,51 @@ class _SubstanceDetailState extends ConsumerState<SubstanceDetailScreen> {
                         ),
                         const SizedBox(height: 6),
                         for (final log in medLogs.take(10))
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '• ${dateTimeFmt.format(log.takenAt)}${log.note != null ? ' — ${log.note}' : ''}',
-                                    style: const TextStyle(fontSize: 13),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () => showEditDoseDialog(ctx, ref, log),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 4,
+                                horizontal: 4,
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '• ${dateTimeFmt.format(log.takenAt)}${log.note != null ? ' — ${log.note}' : ''}',
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
                                   ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.delete_outline,
-                                    size: 16,
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.edit_outlined,
+                                      size: 16,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'Edit time taken',
+                                    onPressed:
+                                        () => showEditDoseDialog(ctx, ref, log),
                                   ),
-                                  visualDensity: VisualDensity.compact,
-                                  tooltip: 'Remove timestamp',
-                                  onPressed: () {
-                                    ref
-                                        .read(
-                                          medicationDoseLogsProvider.notifier,
-                                        )
-                                        .deleteLog(log.id);
-                                  },
-                                ),
-                              ],
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 16,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'Remove timestamp',
+                                    onPressed: () {
+                                      ref
+                                          .read(
+                                            medicationDoseLogsProvider.notifier,
+                                          )
+                                          .deleteLog(log.id);
+                                    },
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                       ],

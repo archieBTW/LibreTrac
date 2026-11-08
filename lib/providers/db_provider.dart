@@ -141,6 +141,14 @@ extension BackupOps on AppDatabase {
     final customMetrics =
         rawMetrics != null ? jsonDecode(rawMetrics) as List : [];
 
+    final rawLogs = prefs.getStringList('medication_dose_logs') ?? [];
+    final doseLogs = rawLogs.map((s) => jsonDecode(s)).toList();
+    final rawDosesPerDay = prefs.getString('medication_doses_per_day');
+    final dosesPerDay = rawDosesPerDay != null ? jsonDecode(rawDosesPerDay) : null;
+    final substanceOrder = prefs.getStringList('substanceOrder') ?? [];
+    final dreamLensPreset = prefs.getString('dream_lens_preset');
+    final dreamCustomInstructions = prefs.getString('dream_custom_instructions');
+
     return {
       'substances':
           (await select(substances).get()).map((e) => e.toJson()).toList(),
@@ -162,9 +170,12 @@ extension BackupOps on AppDatabase {
           (await select(symbolSearchResults).get())
               .map((e) => e.toJson())
               .toList(),
-
-      // ← NEW
       'customMetrics': customMetrics,
+      'medicationDoseLogs': doseLogs,
+      'medicationDosesPerDay': dosesPerDay,
+      'substanceOrder': substanceOrder,
+      'dreamLensPreset': dreamLensPreset,
+      'dreamCustomInstructions': dreamCustomInstructions,
     };
   }
 
@@ -252,6 +263,36 @@ extension BackupOps on AppDatabase {
     if (metricList != null && metricList is List) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('custom_metrics', jsonEncode(metricList));
+    }
+
+    // Load medication dose logs, frequencies, order, and dream settings if present
+    final prefs = await SharedPreferences.getInstance();
+    if (json['medicationDoseLogs'] is List) {
+      final list = (json['medicationDoseLogs'] as List)
+          .map((e) => jsonEncode(e))
+          .toList();
+      await prefs.setStringList('medication_dose_logs', list);
+    }
+    if (json['medicationDosesPerDay'] != null) {
+      await prefs.setString(
+        'medication_doses_per_day',
+        jsonEncode(json['medicationDosesPerDay']),
+      );
+    }
+    if (json['substanceOrder'] is List) {
+      await prefs.setStringList(
+        'substanceOrder',
+        (json['substanceOrder'] as List).map((e) => e.toString()).toList(),
+      );
+    }
+    if (json['dreamLensPreset'] is String) {
+      await prefs.setString('dream_lens_preset', json['dreamLensPreset'] as String);
+    }
+    if (json['dreamCustomInstructions'] is String) {
+      await prefs.setString(
+        'dream_custom_instructions',
+        json['dreamCustomInstructions'] as String,
+      );
     }
 
     await transaction(() async {
@@ -892,22 +933,7 @@ final weeklySleepStatsProvider = FutureProvider<
   final oneWeekAgo = DateTime.now().subtract(const Duration(days: 7));
   final entries = await db.sleepEntriesSince(oneWeekAgo);
 
-  if (entries.isEmpty) {
-    return (
-      avgDuration: 0.0,
-      avgQuality: 0.0,
-      entryCount: 0,
-      dreamCount: 0,
-      topTags: const <String>[],
-    );
-  }
-
-  final totalDuration = entries
-      .map((e) => e.hoursSlept)
-      .reduce((a, b) => a + b);
-  final totalQuality = entries
-      .map((e) => e.quality)
-      .reduce((a, b) => a + b);
+  final sleepEntries = entries.where((e) => e.hoursSlept > 0).toList();
 
   int dreamCount = 0;
   final tagFreq = <String, int>{};
@@ -923,10 +949,27 @@ final weeklySleepStatsProvider = FutureProvider<
   final sortedTags =
       tagFreq.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
 
+  if (sleepEntries.isEmpty) {
+    return (
+      avgDuration: 0.0,
+      avgQuality: 0.0,
+      entryCount: 0,
+      dreamCount: dreamCount,
+      topTags: sortedTags.take(3).map((e) => e.key).toList(),
+    );
+  }
+
+  final totalDuration = sleepEntries
+      .map((e) => e.hoursSlept)
+      .reduce((a, b) => a + b);
+  final totalQuality = sleepEntries
+      .map((e) => e.quality)
+      .reduce((a, b) => a + b);
+
   return (
-    avgDuration: totalDuration / entries.length,
-    avgQuality: totalQuality / entries.length,
-    entryCount: entries.length,
+    avgDuration: totalDuration / sleepEntries.length,
+    avgQuality: totalQuality / sleepEntries.length,
+    entryCount: sleepEntries.length,
     dreamCount: dreamCount,
     topTags: sortedTags.take(3).map((e) => e.key).toList(),
   );

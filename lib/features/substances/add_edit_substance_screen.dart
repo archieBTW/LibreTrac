@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:libretrac/core/database/app_database.dart';
+import 'package:libretrac/features/substances/model/medication_dose_log.dart';
 import 'package:libretrac/providers/db_provider.dart';
 
 class AddEditSubstanceScreen extends ConsumerStatefulWidget {
@@ -18,6 +19,7 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
   late final TextEditingController _name;
   late final TextEditingController _dosage;
   late final TextEditingController _notes;
+  int _dosesPerDay = 1;
   bool _saving = false;
 
   @override
@@ -26,6 +28,10 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
     _name = TextEditingController(text: widget.toEdit?.name ?? '');
     _dosage = TextEditingController(text: widget.toEdit?.dosage ?? '');
     _notes = TextEditingController(text: widget.toEdit?.notes ?? '');
+    if (widget.toEdit != null) {
+      final map = ref.read(medicationDosesPerDayProvider);
+      _dosesPerDay = (map[widget.toEdit!.id] ?? 1).clamp(1, 6);
+    }
   }
 
   @override
@@ -43,9 +49,10 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
 
     try {
       final repo = ref.read(substanceRepoProvider);
+      late final int substanceId;
 
       if (widget.toEdit == null) {
-        await repo.add(
+        substanceId = await repo.add(
           SubstancesCompanion.insert(
             name: _name.text.trim(),
             dosage: drift.Value(
@@ -57,6 +64,7 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
           ),
         );
       } else {
+        substanceId = widget.toEdit!.id;
         await repo.update(
           widget.toEdit!.copyWith(
             name: _name.text.trim(),
@@ -70,6 +78,10 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
         );
       }
 
+      await ref
+          .read(medicationDosesPerDayProvider.notifier)
+          .setDosesPerDay(substanceId, _dosesPerDay);
+
       if (mounted) Navigator.pop(context);
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -78,8 +90,10 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final subtleColor = Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.8);
-    
+    final subtleColor = Theme.of(
+      context,
+    ).colorScheme.onSurfaceVariant.withValues(alpha: 0.8);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -106,6 +120,32 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
                   labelText: 'Dosage (e.g., 200 mg)',
                 ),
               ),
+              const SizedBox(height: 16),
+              Text(
+                'Daily Frequency (Times per day)',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Shows $_dosesPerDay check-in marker${_dosesPerDay > 1 ? 's' : ''} per day when logging doses.',
+                style: TextStyle(fontSize: 12, color: subtleColor),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var count = 1; count <= 6; count++)
+                    ChoiceChip(
+                      label: Text('${count}x / day'),
+                      selected: _dosesPerDay == count,
+                      onSelected: (_) => setState(() => _dosesPerDay = count),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: _notes,
                 decoration: const InputDecoration(labelText: 'Notes'),
@@ -116,11 +156,7 @@ class _AddEditSubstanceState extends ConsumerState<AddEditSubstanceScreen> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.info_outline,
-                    size: 14,
-                    color: subtleColor,
-                  ),
+                  Icon(Icons.info_outline, size: 14, color: subtleColor),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(

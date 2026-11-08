@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +24,21 @@ class MedicationDoseLog {
     this.note,
   });
 
+  MedicationDoseLog copyWith({
+    DateTime? takenAt,
+    String? note,
+    bool clearNote = false,
+  }) {
+    return MedicationDoseLog(
+      id: id,
+      substanceId: substanceId,
+      substanceName: substanceName,
+      dosage: dosage,
+      takenAt: takenAt ?? this.takenAt,
+      note: clearNote ? null : (note ?? this.note),
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'substanceId': substanceId,
@@ -41,7 +57,8 @@ class MedicationDoseLog {
 
   factory MedicationDoseLog.fromJson(Map<String, dynamic> json) {
     return MedicationDoseLog(
-      id: (json['id'] as String?) ??
+      id:
+          (json['id'] as String?) ??
           '${json['substanceId']}_${json['takenAt']}',
       substanceId: (json['substanceId'] as num?)?.toInt() ?? 0,
       substanceName: (json['substanceName'] as String?) ?? 'Unknown',
@@ -54,12 +71,104 @@ class MedicationDoseLog {
   }
 }
 
-final medicationDoseLogsProvider = StateNotifierProvider<
-  MedicationDoseNotifier,
-  List<MedicationDoseLog>
->((ref) {
-  return MedicationDoseNotifier();
-});
+/// Shared provider for medication sort order across SubstanceListScreen and MedicationTrackerView.
+final substanceOrderProvider =
+    StateNotifierProvider<SubstanceOrderNotifier, List<int>>((ref) {
+      return SubstanceOrderNotifier();
+    });
+
+class SubstanceOrderNotifier extends StateNotifier<List<int>> {
+  static const prefsKey = 'substanceOrder';
+
+  SubstanceOrderNotifier() : super(const []) {
+    _load();
+  }
+
+  Future<void> reload() => _load();
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(prefsKey);
+    if (raw == null) {
+      state = const [];
+      return;
+    }
+    state = raw.map((e) => int.tryParse(e)).whereType<int>().toList();
+  }
+
+  Future<void> setOrder(List<int> ids) async {
+    state = ids;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(prefsKey, ids.map((e) => e.toString()).toList());
+  }
+
+  List<Substance> sortSubstances(List<Substance> original) {
+    if (state.isEmpty) return [...original];
+    final indexOf = <int, int>{
+      for (var i = 0; i < state.length; i++) state[i]: i,
+    };
+    return [...original]..sort(
+      (a, b) => (indexOf[a.id] ?? 99999).compareTo(indexOf[b.id] ?? 99999),
+    );
+  }
+}
+
+/// Stores how many times per day each medication is scheduled to be taken (default: 1).
+final medicationDosesPerDayProvider =
+    StateNotifierProvider<MedicationDosesPerDayNotifier, Map<int, int>>((ref) {
+      return MedicationDosesPerDayNotifier();
+    });
+
+class MedicationDosesPerDayNotifier extends StateNotifier<Map<int, int>> {
+  static const prefsKey = 'medication_doses_per_day';
+
+  MedicationDosesPerDayNotifier() : super(const {}) {
+    _load();
+  }
+
+  Future<void> reload() => _load();
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(prefsKey);
+    if (raw == null || raw.isEmpty) {
+      state = const {};
+      return;
+    }
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      state = {
+        for (final entry in decoded.entries)
+          if (int.tryParse(entry.key) != null)
+            int.parse(entry.key): (entry.value as num).toInt().clamp(1, 12),
+      };
+    } catch (_) {
+      state = const {};
+    }
+  }
+
+  Future<void> _save() async {
+    final prefs = await SharedPreferences.getInstance();
+    final map = {for (final e in state.entries) e.key.toString(): e.value};
+    await prefs.setString(prefsKey, jsonEncode(map));
+  }
+
+  int dosesFor(int substanceId) => state[substanceId] ?? 1;
+
+  Future<void> setDosesPerDay(int substanceId, int count) async {
+    final copy = Map<int, int>.from(state);
+    copy[substanceId] = count.clamp(1, 12);
+    state = copy;
+    await _save();
+  }
+}
+
+final medicationDoseLogsProvider =
+    StateNotifierProvider<MedicationDoseNotifier, List<MedicationDoseLog>>((
+      ref,
+    ) {
+      return MedicationDoseNotifier();
+    });
 
 class MedicationDoseNotifier extends StateNotifier<List<MedicationDoseLog>> {
   static const prefsKey = 'medication_dose_logs';
@@ -118,6 +227,27 @@ class MedicationDoseNotifier extends StateNotifier<List<MedicationDoseLog>> {
     return entry;
   }
 
+  Future<void> updateLog(
+    String id, {
+    required DateTime takenAt,
+    String? note,
+  }) async {
+    final cleanNote = (note != null && note.trim().isNotEmpty) ? note.trim() : null;
+    final updated = [
+      for (final item in state)
+        if (item.id == id)
+          item.copyWith(
+            takenAt: takenAt,
+            note: cleanNote,
+            clearNote: cleanNote == null,
+          )
+        else
+          item,
+    ]..sort((a, b) => b.takenAt.compareTo(a.takenAt));
+    state = updated;
+    await _save();
+  }
+
   Future<void> deleteLog(String id) async {
     state = state.where((e) => e.id != id).toList();
     await _save();
@@ -133,7 +263,70 @@ bool isSameCalendarDay(DateTime a, DateTime b) {
   return a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
-/// Helper dialog to log a dose either right now or at a custom date/time with an optional note.
+/// Styled, auto-dismissing floating toast for medication actions.
+/// Explicitly hides itself after 2.8 seconds so `SnackBarAction` never prevents auto-dismissal on web/mobile.
+void showStyledMedToast(
+  BuildContext context, {
+  required String message,
+  VoidCallback? onUndo,
+}) {
+  if (!context.mounted) return;
+  final messenger = ScaffoldMessenger.of(context);
+  final theme = Theme.of(context);
+
+  messenger.clearSnackBars();
+  final controller = messenger.showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      backgroundColor: theme.colorScheme.inverseSurface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      duration: const Duration(milliseconds: 2800),
+      content: Row(
+        children: [
+          const Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: theme.colorScheme.onInverseSurface,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (onUndo != null)
+            TextButton(
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.amberAccent,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: () {
+                messenger.hideCurrentSnackBar();
+                onUndo();
+              },
+              child: const Text(
+                'UNDO',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+
+  Timer(const Duration(milliseconds: 2800), () {
+    try {
+      controller.close();
+    } catch (_) {}
+  });
+}
+
+/// Dialog to log a new dose at a custom date/time with an optional note.
 Future<MedicationDoseLog?> showLogDoseDialog(
   BuildContext context,
   WidgetRef ref,
@@ -269,20 +462,329 @@ Future<MedicationDoseLog?> showLogDoseDialog(
   );
 
   if (confirmed == true) {
-    return ref
+    final entry = await ref
         .read(medicationDoseLogsProvider.notifier)
         .logDose(
           substance: substance,
           takenAt: selectedDateTime,
           note: noteController.text,
         );
+    if (context.mounted) {
+      showStyledMedToast(
+        context,
+        message:
+            'Logged ${substance.name} at ${timeFmt.format(entry.takenAt)}',
+        onUndo: () {
+          ref.read(medicationDoseLogsProvider.notifier).deleteLog(entry.id);
+        },
+      );
+    }
+    return entry;
   }
   return null;
 }
 
+/// Dialog to edit the timestamp or note of an existing logged dose, or delete it.
+Future<void> showEditDoseDialog(
+  BuildContext context,
+  WidgetRef ref,
+  MedicationDoseLog log,
+) async {
+  DateTime selectedDateTime = log.takenAt;
+  final noteController = TextEditingController(text: log.note ?? '');
+  final dateFmt = DateFormat.yMMMd();
+  final timeFmt = DateFormat.jm();
+
+  final action = await showDialog<String>(
+    context: context,
+    builder: (dialogCtx) {
+      return StatefulBuilder(
+        builder: (ctx, setState) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit_calendar_outlined),
+                const SizedBox(width: 8),
+                Expanded(child: Text('Edit ${log.substanceName} Dose')),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Time Taken:',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.calendar_today, size: 16),
+                        label: Text(
+                          dateFmt.format(selectedDateTime),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: () async {
+                          final pickedDate = await showDatePicker(
+                            context: ctx,
+                            initialDate: selectedDateTime,
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 1),
+                            ),
+                          );
+                          if (pickedDate != null) {
+                            setState(() {
+                              selectedDateTime = DateTime(
+                                pickedDate.year,
+                                pickedDate.month,
+                                pickedDate.day,
+                                selectedDateTime.hour,
+                                selectedDateTime.minute,
+                              );
+                            });
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.access_time, size: 16),
+                        label: Text(
+                          timeFmt.format(selectedDateTime),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: () async {
+                          final pickedTime = await showTimePicker(
+                            context: ctx,
+                            initialTime: TimeOfDay.fromDateTime(
+                              selectedDateTime,
+                            ),
+                          );
+                          if (pickedTime != null) {
+                            setState(() {
+                              selectedDateTime = DateTime(
+                                selectedDateTime.year,
+                                selectedDateTime.month,
+                                selectedDateTime.day,
+                                pickedTime.hour,
+                                pickedTime.minute,
+                              );
+                            });
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: noteController,
+                  decoration: const InputDecoration(
+                    labelText: 'Note (optional)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton.icon(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  color: Colors.redAccent,
+                  size: 18,
+                ),
+                label: const Text(
+                  'Delete',
+                  style: TextStyle(color: Colors.redAccent),
+                ),
+                onPressed: () => Navigator.pop(dialogCtx, 'delete'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, 'cancel'),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx, 'save'),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  if (action == 'delete') {
+    await ref.read(medicationDoseLogsProvider.notifier).deleteLog(log.id);
+    if (context.mounted) {
+      showStyledMedToast(
+        context,
+        message: 'Removed ${log.substanceName} dose log',
+      );
+    }
+  } else if (action == 'save') {
+    await ref
+        .read(medicationDoseLogsProvider.notifier)
+        .updateLog(
+          log.id,
+          takenAt: selectedDateTime,
+          note: noteController.text,
+        );
+    if (context.mounted) {
+      showStyledMedToast(
+        context,
+        message:
+            'Updated ${log.substanceName} time to ${timeFmt.format(selectedDateTime)}',
+      );
+    }
+  }
+}
+
+/// Interactive row of individual dose markers for a medication on a given day.
+/// Shows one marker per scheduled daily dose (e.g. Dose 1, Dose 2, Dose 3) plus any extra logged doses.
+/// Tapping an untaken marker logs that dose; tapping a taken marker opens the edit-time dialog!
+class DailyDoseMarkersRow extends ConsumerWidget {
+  const DailyDoseMarkersRow({
+    required this.substance,
+    required this.todayLogs,
+    required this.dosesPerDay,
+    super.key,
+  });
+
+  final Substance substance;
+  final List<MedicationDoseLog> todayLogs;
+  final int dosesPerDay;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final timeFmt = DateFormat.jm();
+    final totalSlots =
+        todayLogs.length > dosesPerDay ? todayLogs.length : dosesPerDay;
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (int i = 0; i < totalSlots; i++)
+          if (i < todayLogs.length)
+            // Taken slot — tap to edit time or delete!
+            InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () => showEditDoseDialog(context, ref, todayLogs[i]),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.green.withValues(alpha: 0.5),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.check_circle,
+                      size: 16,
+                      color: Colors.green,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      totalSlots > 1
+                          ? 'Dose ${i + 1}: ${timeFmt.format(todayLogs[i].takenAt)}'
+                          : 'Taken ${timeFmt.format(todayLogs[i].takenAt)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.green,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.edit, size: 12, color: Colors.green),
+                  ],
+                ),
+              ),
+            )
+          else
+            // Untaken scheduled slot — tap to mark taken now!
+            InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () async {
+                final entry = await ref
+                    .read(medicationDoseLogsProvider.notifier)
+                    .logDose(substance: substance);
+                if (context.mounted) {
+                  showStyledMedToast(
+                    context,
+                    message:
+                        'Logged ${substance.name} (Dose ${i + 1}) at ${timeFmt.format(entry.takenAt)}',
+                    onUndo: () {
+                      ref
+                          .read(medicationDoseLogsProvider.notifier)
+                          .deleteLog(entry.id);
+                    },
+                  );
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.amber.withValues(alpha: 0.6),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.radio_button_unchecked,
+                      size: 16,
+                      color: Colors.amber,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      totalSlots > 1 ? 'Take Dose ${i + 1}' : 'Take Now',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+        // Button to log an additional dose or custom time
+        ActionChip(
+          visualDensity: VisualDensity.compact,
+          avatar: const Icon(Icons.more_time, size: 14),
+          label: const Text('Custom Time', style: TextStyle(fontSize: 11)),
+          onPressed: () => showLogDoseDialog(context, ref, substance),
+        ),
+      ],
+    );
+  }
+}
+
 /// Widget showing a 7-day adherence lookback strip for a single medication,
-/// highlighting which days it was taken (with times) and which days were missed.
-class SevenDayAdherenceStrip extends StatelessWidget {
+/// highlighting which days it was taken (including multi-dose counts) and which days were missed.
+class SevenDayAdherenceStrip extends ConsumerWidget {
   const SevenDayAdherenceStrip({
     required this.substance,
     required this.logs,
@@ -293,7 +795,9 @@ class SevenDayAdherenceStrip extends StatelessWidget {
   final List<MedicationDoseLog> logs;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final dosesPerDay =
+        ref.watch(medicationDosesPerDayProvider)[substance.id] ?? 1;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final startDay = DateTime(
@@ -321,21 +825,27 @@ class SevenDayAdherenceStrip extends StatelessWidget {
             final dayLogs =
                 logs.where((l) => isSameCalendarDay(l.takenAt, day)).toList()
                   ..sort((a, b) => a.takenAt.compareTo(b.takenAt));
-            final taken = dayLogs.isNotEmpty;
+            final takenCount = dayLogs.length;
+            final fullyTaken = takenCount >= dosesPerDay;
+            final partiallyTaken = takenCount > 0 && takenCount < dosesPerDay;
             final isToday = isSameCalendarDay(day, today);
             final wasActiveOnDay =
                 !day.isBefore(startDay) &&
                 (stopDay == null || !day.isAfter(stopDay));
-            final isMissed = !taken && !isToday && wasActiveOnDay;
+            final isMissed = takenCount == 0 && !isToday && wasActiveOnDay;
 
             final Color bgColor;
             final Color iconColor;
             final IconData icon;
 
-            if (taken) {
+            if (fullyTaken) {
               bgColor = Colors.green.withValues(alpha: 0.18);
               iconColor = Colors.green;
               icon = Icons.check_circle;
+            } else if (partiallyTaken) {
+              bgColor = Colors.amber.withValues(alpha: 0.2);
+              iconColor = Colors.amber.shade700;
+              icon = Icons.timelapse;
             } else if (isMissed) {
               bgColor = Colors.redAccent.withValues(alpha: 0.15);
               iconColor = Colors.redAccent;
@@ -351,12 +861,12 @@ class SevenDayAdherenceStrip extends StatelessWidget {
             }
 
             final tooltipMsg =
-                taken
-                    ? '${DateFormat.MMMd().format(day)}: Taken at ${dayLogs.map((l) => DateFormat.jm().format(l.takenAt)).join(', ')}'
+                takenCount > 0
+                    ? '${DateFormat.MMMd().format(day)} ($takenCount/$dosesPerDay): ${dayLogs.map((l) => DateFormat.jm().format(l.takenAt)).join(', ')}'
                     : (isMissed
                         ? '${DateFormat.MMMd().format(day)}: Missed'
                         : (isToday
-                            ? 'Today: Not logged yet'
+                            ? 'Today: 0/$dosesPerDay logged'
                             : '${DateFormat.MMMd().format(day)}: Inactive'));
 
             return Tooltip(
@@ -384,18 +894,35 @@ class SevenDayAdherenceStrip extends StatelessWidget {
                               ? Border.all(color: iconColor, width: 1.5)
                               : null,
                     ),
-                    child: Icon(icon, size: 18, color: iconColor),
+                    child:
+                        dosesPerDay > 1 && takenCount > 0
+                            ? Center(
+                              child: Text(
+                                '$takenCount/$dosesPerDay',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: iconColor,
+                                ),
+                              ),
+                            )
+                            : Icon(icon, size: 18, color: iconColor),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    taken
+                    takenCount > 0
                         ? DateFormat('h:mma')
                             .format(dayLogs.last.takenAt)
                             .toLowerCase()
                         : (isMissed ? 'Missed' : ''),
                     style: TextStyle(
                       fontSize: 9,
-                      color: taken ? Colors.green : Colors.redAccent,
+                      color:
+                          fullyTaken
+                              ? Colors.green
+                              : (partiallyTaken
+                                  ? Colors.amber.shade700
+                                  : Colors.redAccent),
                     ),
                   ),
                 ],
@@ -407,25 +934,80 @@ class SevenDayAdherenceStrip extends StatelessWidget {
 }
 
 /// Full-featured Medication Check-in & Adherence History view (usable as a tab or standalone screen).
+/// Supports optional searchQuery and dateRange filtering.
 class MedicationTrackerView extends ConsumerWidget {
-  const MedicationTrackerView({super.key});
+  const MedicationTrackerView({
+    this.searchQuery = '',
+    this.dateRange,
+    super.key,
+  });
+
+  final String searchQuery;
+  final DateTimeRange? dateRange;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final activeAsync = ref.watch(activeSubstancesStreamProvider);
     final allLogs = ref.watch(medicationDoseLogsProvider);
+    final dosesMap = ref.watch(medicationDosesPerDayProvider);
+    ref.watch(substanceOrderProvider);
+    final orderNotifier = ref.read(substanceOrderProvider.notifier);
+
     final now = DateTime.now();
-    final timeFmt = DateFormat.jm();
     final dateTimeFmt = DateFormat.yMMMd().add_jm();
+    final q = searchQuery.trim().toLowerCase();
 
     return activeAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => Center(child: Text('Error: $e')),
-      data: (activeMeds) {
+      data: (rawMeds) {
+        final orderedMeds = orderNotifier.sortSubstances(rawMeds);
+        final activeMeds =
+            q.isEmpty
+                ? orderedMeds
+                : orderedMeds
+                    .where(
+                      (m) =>
+                          m.name.toLowerCase().contains(q) ||
+                          (m.dosage?.toLowerCase().contains(q) ?? false) ||
+                          (m.notes?.toLowerCase().contains(q) ?? false),
+                    )
+                    .toList();
+
+        final filteredLogs =
+            allLogs.where((log) {
+              if (dateRange != null) {
+                final start = DateTime(
+                  dateRange!.start.year,
+                  dateRange!.start.month,
+                  dateRange!.start.day,
+                );
+                final end = DateTime(
+                  dateRange!.end.year,
+                  dateRange!.end.month,
+                  dateRange!.end.day,
+                  23,
+                  59,
+                  59,
+                );
+                if (log.takenAt.isBefore(start) || log.takenAt.isAfter(end)) {
+                  return false;
+                }
+              }
+              if (q.isNotEmpty) {
+                final matchesName = log.substanceName.toLowerCase().contains(q);
+                final matchesDose =
+                    log.dosage?.toLowerCase().contains(q) ?? false;
+                final matchesNote =
+                    log.note?.toLowerCase().contains(q) ?? false;
+                if (!matchesName && !matchesDose && !matchesNote) return false;
+              }
+              return true;
+            }).toList();
+
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            // Today's Active Medications Checklist
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -435,20 +1017,25 @@ class MedicationTrackerView extends ConsumerWidget {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                if (activeMeds.isNotEmpty)
-                  Text(
-                    '${activeMeds.where((m) => allLogs.any((l) => l.substanceId == m.id && isSameCalendarDay(l.takenAt, now))).length}/${activeMeds.length} taken',
-                    style: Theme.of(context).textTheme.bodySmall,
+                if (activeMeds.isNotEmpty && q.isEmpty)
+                  TextButton.icon(
+                    icon: const Icon(Icons.swap_vert, size: 16),
+                    label: const Text(
+                      'Reorder',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    onPressed:
+                        () => _showReorderDialog(context, ref, orderedMeds),
                   ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             if (activeMeds.isEmpty)
               const Card(
                 child: Padding(
                   padding: EdgeInsets.all(16),
                   child: Text(
-                    'No active medications or supplements. Add them in Medications/Supplements to track daily doses.',
+                    'No matching active medications or supplements.',
                   ),
                 ),
               )
@@ -456,6 +1043,7 @@ class MedicationTrackerView extends ConsumerWidget {
               for (final med in activeMeds)
                 Builder(
                   builder: (ctx) {
+                    final dosesPerDay = dosesMap[med.id] ?? 1;
                     final medLogs =
                         allLogs
                             .where((l) => l.substanceId == med.id)
@@ -465,7 +1053,6 @@ class MedicationTrackerView extends ConsumerWidget {
                             .where((l) => isSameCalendarDay(l.takenAt, now))
                             .toList()
                           ..sort((a, b) => a.takenAt.compareTo(b.takenAt));
-                    final takenToday = todayLogs.isNotEmpty;
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -475,19 +1062,10 @@ class MedicationTrackerView extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Icon(
-                                  takenToday
-                                      ? Icons.check_circle
-                                      : Icons.radio_button_unchecked,
-                                  color:
-                                      takenToday ? Colors.green : Colors.amber,
-                                ),
-                                const SizedBox(width: 10),
                                 Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                  child: Row(
                                     children: [
                                       Text(
                                         med.name,
@@ -497,7 +1075,8 @@ class MedicationTrackerView extends ConsumerWidget {
                                         ),
                                       ),
                                       if (med.dosage != null &&
-                                          med.dosage!.isNotEmpty)
+                                          med.dosage!.isNotEmpty) ...[
+                                        const SizedBox(width: 8),
                                         Text(
                                           med.dosage!,
                                           style: const TextStyle(
@@ -505,61 +1084,31 @@ class MedicationTrackerView extends ConsumerWidget {
                                             color: Colors.grey,
                                           ),
                                         ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        takenToday
-                                            ? 'Taken today at ${todayLogs.map((l) => timeFmt.format(l.takenAt)).join(', ')}'
-                                            : 'Not logged yet today',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          color:
-                                              takenToday
-                                                  ? Colors.green
-                                                  : Colors.orangeAccent,
-                                        ),
-                                      ),
+                                      ],
                                     ],
                                   ),
                                 ),
-                                IconButton(
-                                  icon: const Icon(Icons.edit_calendar_outlined),
-                                  tooltip: 'Log custom time',
+                                ActionChip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: Text(
+                                    '${todayLogs.length}/$dosesPerDay today ($dosesPerDay×/day)',
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
                                   onPressed:
-                                      () => showLogDoseDialog(ctx, ref, med),
-                                ),
-                                ElevatedButton.icon(
-                                  icon: const Icon(Icons.check, size: 16),
-                                  label: Text(takenToday ? 'Take +1' : 'Take Now'),
-                                  onPressed: () async {
-                                    final entry = await ref
-                                        .read(
-                                          medicationDoseLogsProvider.notifier,
-                                        )
-                                        .logDose(substance: med);
-                                    if (ctx.mounted) {
-                                      ScaffoldMessenger.of(ctx).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            'Logged ${med.name} at ${timeFmt.format(entry.takenAt)}',
-                                          ),
-                                          action: SnackBarAction(
-                                            label: 'Undo',
-                                            onPressed: () {
-                                              ref
-                                                  .read(
-                                                    medicationDoseLogsProvider
-                                                        .notifier,
-                                                  )
-                                                  .deleteLog(entry.id);
-                                            },
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                  },
+                                      () => _showDosesPerDayDialog(
+                                        ctx,
+                                        ref,
+                                        med,
+                                        dosesPerDay,
+                                      ),
                                 ),
                               ],
+                            ),
+                            const SizedBox(height: 10),
+                            DailyDoseMarkersRow(
+                              substance: med,
+                              todayLogs: todayLogs,
+                              dosesPerDay: dosesPerDay,
                             ),
                             const Divider(height: 20),
                             SevenDayAdherenceStrip(
@@ -575,28 +1124,29 @@ class MedicationTrackerView extends ConsumerWidget {
 
             const SizedBox(height: 20),
             Text(
-              'Recent Dose Timestamp History',
+              'Dose Timestamp History (Tap any entry to edit time)',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
-            if (allLogs.isEmpty)
+            if (filteredLogs.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 24),
                 child: Center(
                   child: Text(
-                    'No medication doses logged yet.',
+                    'No medication doses found.',
                     style: TextStyle(color: Colors.grey),
                   ),
                 ),
               )
             else
-              for (final log in allLogs.take(50))
+              for (final log in filteredLogs.take(60))
                 Card(
                   margin: const EdgeInsets.only(bottom: 6),
                   child: ListTile(
                     dense: true,
+                    onTap: () => showEditDoseDialog(context, ref, log),
                     leading: const Icon(
                       Icons.medication_liquid,
                       color: Colors.teal,
@@ -608,18 +1158,150 @@ class MedicationTrackerView extends ConsumerWidget {
                     subtitle: Text(
                       '${dateTimeFmt.format(log.takenAt)}${log.note != null ? '\nNote: ${log.note}' : ''}',
                     ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      tooltip: 'Delete log entry',
-                      onPressed: () {
-                        ref
-                            .read(medicationDoseLogsProvider.notifier)
-                            .deleteLog(log.id);
-                      },
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          tooltip: 'Edit time taken',
+                          onPressed:
+                              () => showEditDoseDialog(context, ref, log),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          tooltip: 'Delete log entry',
+                          onPressed: () {
+                            ref
+                                .read(medicationDoseLogsProvider.notifier)
+                                .deleteLog(log.id);
+                            showStyledMedToast(
+                              context,
+                              message: 'Removed ${log.substanceName} dose log',
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 ),
           ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showDosesPerDayDialog(
+    BuildContext context,
+    WidgetRef ref,
+    Substance med,
+    int currentDoses,
+  ) async {
+    int selected = currentDoses;
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              title: Text('${med.name} Daily Frequency'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('How many times per day do you take this?'),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (int n = 1; n <= 6; n++)
+                        ChoiceChip(
+                          label: Text('${n}× / day'),
+                          selected: selected == n,
+                          onSelected: (_) => setState(() => selected = n),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(dialogCtx, selected),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result != null) {
+      await ref
+          .read(medicationDosesPerDayProvider.notifier)
+          .setDosesPerDay(med.id, result);
+    }
+  }
+
+  Future<void> _showReorderDialog(
+    BuildContext context,
+    WidgetRef ref,
+    List<Substance> currentItems,
+  ) async {
+    final items = [...currentItems];
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              title: const Text('Reorder Medications'),
+              content: SizedBox(
+                width: 340,
+                height: 360,
+                child: ReorderableListView.builder(
+                  buildDefaultDragHandles: false,
+                  itemCount: items.length,
+                  onReorder: (oldIndex, newIndex) {
+                    if (newIndex > oldIndex) newIndex -= 1;
+                    setState(() {
+                      final moved = items.removeAt(oldIndex);
+                      items.insert(newIndex, moved);
+                    });
+                    ref
+                        .read(substanceOrderProvider.notifier)
+                        .setOrder(items.map((e) => e.id).toList());
+                  },
+                  itemBuilder: (ctx, i) {
+                    final s = items[i];
+                    return ListTile(
+                      key: ValueKey(s.id),
+                      contentPadding: EdgeInsets.zero,
+                      leading: ReorderableDragStartListener(
+                        index: i,
+                        child: const Padding(
+                          padding: EdgeInsets.all(8.0),
+                          child: Icon(Icons.drag_handle),
+                        ),
+                      ),
+                      title: Text(s.name),
+                      subtitle: s.dosage != null ? Text(s.dosage!) : null,
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  child: const Text('Done'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -637,4 +1319,3 @@ class MedicationTrackerScreen extends StatelessWidget {
     );
   }
 }
-
