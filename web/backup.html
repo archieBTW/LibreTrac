@@ -511,7 +511,26 @@
             }
 
             dataJson['substances'] = queryTable('substances');
-            dataJson['moodEntries'] = queryTable('mood_entries');
+            dataJson['moodEntries'] = queryTable('mood_entries').map(function(m) {
+              var metrics = m.customMetrics || m.custom_metrics;
+              if (typeof metrics === 'string') {
+                try { metrics = JSON.parse(metrics); } catch(_) {}
+              }
+              if (!metrics || typeof metrics !== 'object') {
+                metrics = {};
+              }
+              var legacy = ['energy', 'happiness', 'creativity', 'focus', 'irritability', 'anxiety'];
+              legacy.forEach(function(leg) {
+                if (m[leg] !== undefined && m[leg] !== null) {
+                  var title = leg.charAt(0).toUpperCase() + leg.slice(1);
+                  metrics[title] = Number(m[leg]) || 0;
+                }
+              });
+              if (Object.keys(metrics).length > 0) {
+                m.customMetrics = metrics;
+              }
+              return m;
+            });
             dataJson['sleepEntries'] = queryTable('sleep_entries');
             dataJson['reactionResults'] = queryTable('reaction_results');
             dataJson['stroopResults'] = queryTable('stroop_results');
@@ -531,6 +550,38 @@
           dataJson['customMetrics'] = JSON.parse(customMetricsRaw);
         } catch (_) {
           dataJson['customMetrics'] = customMetricsRaw;
+        }
+      }
+
+      // If customMetrics is missing or empty, synthesize from extracted mood entries
+      if (!dataJson['customMetrics'] || (Array.isArray(dataJson['customMetrics']) && dataJson['customMetrics'].length === 0)) {
+        var defaultColors = {
+          'Energy': 0xFF009688,
+          'Happiness': 0xFFFF9800,
+          'Creativity': 0xFF9C27B0,
+          'Focus': 0xFF2196F3,
+          'Irritability': 0xFFF44336,
+          'Anxiety': 0xFFFFC107
+        };
+        var synthesized = [];
+        var seenNames = {};
+        if (Array.isArray(dataJson['moodEntries'])) {
+          dataJson['moodEntries'].forEach(function(entry) {
+            if (entry.customMetrics && typeof entry.customMetrics === 'object') {
+              Object.keys(entry.customMetrics).forEach(function(k) {
+                if (!seenNames[k]) {
+                  seenNames[k] = true;
+                  synthesized.push({
+                    name: k,
+                    color: defaultColors[k] || 0xFF2196F3
+                  });
+                }
+              });
+            }
+          });
+        }
+        if (synthesized.length > 0) {
+          dataJson['customMetrics'] = synthesized;
         }
       }
 

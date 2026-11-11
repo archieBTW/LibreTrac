@@ -422,7 +422,26 @@
               }
             }
             out.substances = queryTable('substances');
-            out.moodEntries = queryTable('mood_entries');
+            out.moodEntries = queryTable('mood_entries').map(function(m) {
+              var metrics = m.customMetrics || m.custom_metrics;
+              if (typeof metrics === 'string') {
+                try { metrics = JSON.parse(metrics); } catch(_) {}
+              }
+              if (!metrics || typeof metrics !== 'object') {
+                metrics = {};
+              }
+              var legacy = ['energy', 'happiness', 'creativity', 'focus', 'irritability', 'anxiety'];
+              legacy.forEach(function(leg) {
+                if (m[leg] !== undefined && m[leg] !== null) {
+                  var title = leg.charAt(0).toUpperCase() + leg.slice(1);
+                  metrics[title] = Number(m[leg]) || 0;
+                }
+              });
+              if (Object.keys(metrics).length > 0) {
+                m.customMetrics = metrics;
+              }
+              return m;
+            });
             out.sleepEntries = queryTable('sleep_entries');
             out.reactionResults = queryTable('reaction_results');
             out.stroopResults = queryTable('stroop_results');

@@ -18,7 +18,7 @@ class MoodCheckInScreen extends ConsumerStatefulWidget {
 }
 
 class _MoodCheckInScreenState extends ConsumerState<MoodCheckInScreen> {
-  late Map<String, int> _moodValues;
+  Map<String, int> _moodValues = {};
 
   final TextEditingController _notesController = TextEditingController();
 
@@ -72,6 +72,12 @@ class _MoodCheckInScreenState extends ConsumerState<MoodCheckInScreen> {
             ),
           ),
         );
+
+    ref.invalidate(journalEntriesStreamProvider);
+    ref.invalidate(moodEntriesStreamProvider);
+    ref.invalidate(filteredMoodEntriesProvider);
+    ref.invalidate(weeklyMoodAverageProvider);
+    ref.invalidate(weeklyMoodMetricAveragesProvider);
 
     await MoodWidgetService.update();
 
@@ -142,7 +148,7 @@ class _MoodCheckInScreenState extends ConsumerState<MoodCheckInScreen> {
             ...ref.watch(customMetricsProvider).map((metric) {
               final name = metric.name;
               final color = metric.color;
-              final value = _moodValues[name]!;
+              final value = _moodValues.putIfAbsent(name, () => 5);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

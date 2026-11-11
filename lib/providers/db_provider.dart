@@ -217,16 +217,74 @@ extension BackupOps on AppDatabase {
     ) async {
       try {
         final rows = await query();
-        return rows.map((e) => e.toJson()).toList();
+        final List<Map<String, dynamic>> list = [];
+        for (final row in rows) {
+          try {
+            list.add(row.toJson());
+          } catch (rowErr) {
+            debugPrint('safeTable row serialization warning: $rowErr');
+          }
+        }
+        return list;
       } catch (e) {
         debugPrint('safeTable export warning: $e');
         return [];
       }
     }
 
+    Future<List<Map<String, dynamic>>> safeMoodExport() async {
+      try {
+        final rows = await select(moodEntries).get();
+        final List<Map<String, dynamic>> list = [];
+        for (final row in rows) {
+          try {
+            list.add(row.toJson());
+          } catch (_) {
+            list.add({
+              'id': row.id,
+              'timestamp': row.timestamp.toIso8601String(),
+              'customMetrics': row.customMetrics,
+              'notes': row.notes,
+            });
+          }
+        }
+        return list;
+      } catch (e) {
+        debugPrint('safeMoodExport standard query failed: $e. Attempting raw fallback...');
+        try {
+          final rawRows = await customSelect('SELECT * FROM mood_entries').get();
+          final List<Map<String, dynamic>> fallbackList = [];
+          for (final row in rawRows) {
+            final data = row.data;
+            final id = parseInt(data['id']);
+            final ts = parseDateTime(
+                  data['timestamp'] ??
+                      data['date'] ??
+                      data['createdAt'] ??
+                      data['created_at'],
+                )?.toIso8601String() ??
+                DateTime.now().toIso8601String();
+            final notes = data['notes']?.toString();
+            final metrics = extractMoodMetrics(data);
+
+            fallbackList.add({
+              'id': id,
+              'timestamp': ts,
+              'customMetrics': metrics,
+              'notes': notes,
+            });
+          }
+          return fallbackList;
+        } catch (rawErr) {
+          debugPrint('Raw mood export fallback failed: $rawErr');
+          return [];
+        }
+      }
+    }
+
     return {
       'substances': await safeTable(() => select(substances).get()),
-      'moodEntries': await safeTable(() => select(moodEntries).get()),
+      'moodEntries': await safeMoodExport(),
       'sleepEntries': await safeTable(() => select(sleepEntries).get()),
       'reactionResults': await safeTable(() => select(reactionResults).get()),
       'stroopResults': await safeTable(() => select(stroopResults).get()),
@@ -325,11 +383,13 @@ extension BackupOps on AppDatabase {
     return defaultVal;
   }
 
-  MoodEntry moodEntryFromJson(Map<String, dynamic> json) {
-    final rawMetrics = json['customMetrics'] ?? json['custom_metrics'];
+  static Map<String, int>? extractMoodMetrics(Map<String, dynamic> json) {
+    final rawMetrics = json['customMetrics'] ??
+        json['custom_metrics'] ??
+        json['metrics'];
     Map<String, int>? customMetrics;
 
-    if (rawMetrics is String) {
+    if (rawMetrics is String && rawMetrics.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(rawMetrics);
         if (decoded is Map) {
@@ -344,8 +404,41 @@ extension BackupOps on AppDatabase {
       );
     }
 
+    // Check for legacy v1 metrics: energy, happiness, creativity, focus, irritability, anxiety
+    const legacyKeys = {
+      'energy': 'Energy',
+      'happiness': 'Happiness',
+      'creativity': 'Creativity',
+      'focus': 'Focus',
+      'irritability': 'Irritability',
+      'anxiety': 'Anxiety',
+    };
+
+    for (final entry in legacyKeys.entries) {
+      final val = json[entry.key] ?? json[entry.value];
+      if (val != null) {
+        customMetrics ??= {};
+        if (!customMetrics.containsKey(entry.value)) {
+          customMetrics[entry.value] = parseInt(val);
+        }
+      }
+    }
+
+    return (customMetrics != null && customMetrics.isNotEmpty)
+        ? customMetrics
+        : null;
+  }
+
+  MoodEntry moodEntryFromJson(Map<String, dynamic> json) {
+    final customMetrics = extractMoodMetrics(json);
     final id = parseInt(json['id']);
-    final ts = parseDateTime(json['timestamp']) ?? DateTime.now();
+    final ts = parseDateTime(
+          json['timestamp'] ??
+              json['date'] ??
+              json['createdAt'] ??
+              json['created_at'],
+        ) ??
+        DateTime.now();
 
     return MoodEntry(
       id: id,
@@ -597,37 +690,83 @@ extension BackupOps on AppDatabase {
 
     final rawMoods = findList(['moodEntries', 'mood_entries']);
     final List<MoodEntriesCompanion> parsedMoods = [];
+    final Set<String> discoveredMetricNames = {};
+
     if (rawMoods != null) {
       for (final r in rawMoods) {
         if (r is Map) {
           final m = Map<String, dynamic>.from(r);
           final idVal = m['id'] != null ? parseInt(m['id']) : null;
-          final rawMetrics = m['customMetrics'] ?? m['custom_metrics'];
-          Map<String, int>? metrics;
-          if (rawMetrics is String) {
-            try {
-              final d = jsonDecode(rawMetrics);
-              if (d is Map) {
-                metrics = d.map((k, v) => MapEntry(k.toString(), parseInt(v)));
-              }
-            } catch (_) {}
-          } else if (rawMetrics is Map) {
-            metrics = rawMetrics.map(
-              (k, v) => MapEntry(k.toString(), parseInt(v)),
-            );
+          final metrics = extractMoodMetrics(m);
+
+          if (metrics != null) {
+            discoveredMetricNames.addAll(metrics.keys);
           }
+
+          final ts = parseDateTime(
+                m['timestamp'] ??
+                    m['date'] ??
+                    m['createdAt'] ??
+                    m['created_at'],
+              ) ??
+              DateTime.now();
 
           parsedMoods.add(
             MoodEntriesCompanion(
               id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
-              timestamp: drift.Value(
-                parseDateTime(m['timestamp']) ?? DateTime.now(),
-              ),
+              timestamp: drift.Value(ts),
               customMetrics: drift.Value(metrics),
               notes: drift.Value(m['notes']?.toString()),
             ),
           );
         }
+      }
+    }
+
+    // Ensure discovered metrics from imported moods are in custom_metrics preferences
+    if (discoveredMetricNames.isNotEmpty) {
+      final currentMetricsRaw = prefs.getString('custom_metrics');
+      List<CustomMetric> currentMetrics = [];
+      if (currentMetricsRaw != null) {
+        try {
+          final decoded = jsonDecode(currentMetricsRaw);
+          if (decoded is List) {
+            currentMetrics = decoded
+                .whereType<Map>()
+                .map((e) => CustomMetric.fromJson(Map<String, dynamic>.from(e)))
+                .toList();
+          }
+        } catch (_) {}
+      }
+
+      final currentNames =
+          currentMetrics.map((m) => m.name.toLowerCase()).toSet();
+      bool addedAny = false;
+      const defaultMetricColors = <String, int>{
+        'energy': 0xFF009688,
+        'happiness': 0xFFFF9800,
+        'creativity': 0xFF9C27B0,
+        'focus': 0xFF2196F3,
+        'irritability': 0xFFF44336,
+        'anxiety': 0xFFFFC107,
+      };
+
+      for (final name in discoveredMetricNames) {
+        if (!currentNames.contains(name.toLowerCase())) {
+          currentNames.add(name.toLowerCase());
+          final colVal = defaultMetricColors[name.toLowerCase()] ??
+              Colors.primaries[currentMetrics.length % Colors.primaries.length]
+                  .value;
+          currentMetrics.add(CustomMetric(name: name, color: Color(colVal)));
+          addedAny = true;
+        }
+      }
+
+      if (addedAny || currentMetricsRaw == null) {
+        await prefs.setString(
+          'custom_metrics',
+          jsonEncode(currentMetrics.map((e) => e.toJson()).toList()),
+        );
       }
     }
 
@@ -823,6 +962,8 @@ double parseDouble(dynamic val, [double defaultVal = 0.0]) =>
     BackupOps.parseDouble(val, defaultVal);
 int parseInt(dynamic val, [int defaultVal = 0]) =>
     BackupOps.parseInt(val, defaultVal);
+Map<String, int>? extractMoodMetrics(Map<String, dynamic> json) =>
+    BackupOps.extractMoodMetrics(json);
 
 // NEW: enum + helper
 enum MoodWindow { week, month, threeMonths, sixMonths }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
@@ -42,6 +43,53 @@ class AppDatabase extends _$AppDatabase {
         // await m.createTable(substances);
         await m.alterTable(TableMigration(moodEntries));
       }
+    },
+    beforeOpen: (details) async {
+      // Ensure custom_metrics column exists if database was created or copied without it
+      try {
+        await customStatement('ALTER TABLE mood_entries ADD COLUMN custom_metrics TEXT;');
+      } catch (_) {}
+
+      // If legacy v1 mood columns (energy, happiness, etc.) exist, migrate them into custom_metrics
+      try {
+        final tableInfo = await customSelect('PRAGMA table_info(mood_entries);').get();
+        final columnNames = tableInfo
+            .map((r) => r.data['name']?.toString().toLowerCase())
+            .whereType<String>()
+            .toSet();
+
+        if (columnNames.contains('energy')) {
+          final rows = await customSelect(
+            'SELECT * FROM mood_entries WHERE custom_metrics IS NULL OR custom_metrics = ""',
+          ).get();
+          for (final row in rows) {
+            final data = row.data;
+            final Map<String, int> metrics = {};
+            for (final k in [
+              'energy',
+              'happiness',
+              'creativity',
+              'focus',
+              'irritability',
+              'anxiety',
+            ]) {
+              if (data.containsKey(k) && data[k] != null) {
+                final title = k[0].toUpperCase() + k.substring(1);
+                final val = int.tryParse(data[k].toString());
+                if (val != null) metrics[title] = val;
+              }
+            }
+            if (metrics.isNotEmpty) {
+              final id = data['id'];
+              final encoded = jsonEncode(metrics);
+              await customStatement(
+                'UPDATE mood_entries SET custom_metrics = ? WHERE id = ?',
+                [encoded, id],
+              );
+            }
+          }
+        }
+      } catch (_) {}
     },
   );
 

@@ -236,5 +236,72 @@ void main() {
       expect(prefs.getString('theme_mode'), equals('light'));
       expect(prefs.getInt('streak_count'), equals(14));
     });
+
+    test('restores legacy v1 mood entries with separate energy/happiness columns', () async {
+      // Legacy export from LibreTrac v1 where customMetrics didn't exist yet
+      final v1Import = {
+        'moodEntries': [
+          {
+            'id': 101,
+            'timestamp': '2024-11-10 09:30',
+            'energy': 8,
+            'happiness': 9,
+            'creativity': 7,
+            'focus': 6,
+            'irritability': 2,
+            'anxiety': 3,
+            'notes': 'Great morning!',
+          },
+          {
+            'id': 102,
+            'date': '2024-11-10', // using 'date' instead of 'timestamp'
+            'energy': 4,
+            'happiness': 5,
+            'notes': 'Evening check-in',
+          }
+        ]
+      };
+
+      await db.importData(v1Import);
+
+      final moods = await db.select(db.moodEntries).get();
+      expect(moods.length, equals(2));
+
+      final m1 = moods.firstWhere((m) => m.id == 101);
+      expect(m1.notes, equals('Great morning!'));
+      expect(m1.customMetrics, isNotNull);
+      expect(m1.customMetrics!['Energy'], equals(8));
+      expect(m1.customMetrics!['Happiness'], equals(9));
+      expect(m1.customMetrics!['Creativity'], equals(7));
+      expect(m1.customMetrics!['Focus'], equals(6));
+      expect(m1.customMetrics!['Irritability'], equals(2));
+      expect(m1.customMetrics!['Anxiety'], equals(3));
+
+      final m2 = moods.firstWhere((m) => m.id == 102);
+      expect(m2.notes, equals('Evening check-in'));
+      expect(m2.timestamp.year, equals(2024));
+      expect(m2.customMetrics!['Energy'], equals(4));
+      expect(m2.customMetrics!['Happiness'], equals(5));
+
+      // Verify custom_metrics in SharedPreferences now contains the discovered metrics
+      final prefs = await SharedPreferences.getInstance();
+      final savedMetricsRaw = prefs.getString('custom_metrics');
+      expect(savedMetricsRaw, isNotNull);
+      final List savedList = jsonDecode(savedMetricsRaw!);
+      final names = savedList.map((e) => e['name']).toSet();
+      expect(names.contains('Energy'), isTrue);
+      expect(names.contains('Happiness'), isTrue);
+      expect(names.contains('Creativity'), isTrue);
+      expect(names.contains('Focus'), isTrue);
+      expect(names.contains('Irritability'), isTrue);
+      expect(names.contains('Anxiety'), isTrue);
+
+      // Verify exportData now exports these mood entries with customMetrics
+      final exported = await db.exportData();
+      final exportedMoods = exported['moodEntries'] as List;
+      expect(exportedMoods.length, equals(2));
+      final exportedM1 = exportedMoods.firstWhere((m) => m['id'] == 101);
+      expect(exportedM1['customMetrics']['Energy'], equals(8));
+    });
   });
 }
