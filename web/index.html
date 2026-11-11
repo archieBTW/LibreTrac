@@ -90,6 +90,9 @@
     }
   </style>
 
+  <!-- Local SQL.js for client-side SQLite extraction -->
+  <script src="sql-wasm.js"></script>
+
   <script>
     // LibreTrac Safe Web Cache & Service Worker Reset
     // Unregisters stale flutter_service_worker.js and clears window.caches (Cache Storage).
@@ -217,6 +220,288 @@
       }
     };
 
+    // 5. LibreTrac In-App Direct Storage Recovery from JSON (indexedDB + localStorage)
+    window.restoreFromStorageBackup = globalThis.restoreFromStorageBackup = async function(jsonStr) {
+      try {
+        var data = (typeof jsonStr === 'string') ? JSON.parse(jsonStr) : jsonStr;
+        if (!data) return false;
+
+        // 1. Restore localStorage
+        if (data.localStorage) {
+          for (var key in data.localStorage) {
+            var val = data.localStorage[key];
+            var valStr = (typeof val === 'object') ? JSON.stringify(val) : String(val);
+            localStorage.setItem(key, valStr);
+            if (!key.startsWith('flutter.')) {
+              localStorage.setItem('flutter.' + key, valStr);
+            } else {
+              localStorage.setItem(key.replace(/^flutter\./, ''), valStr);
+            }
+          }
+        }
+
+        // 2. Extract SQLite blocks
+        var dbBytes = null;
+        if (data.indexedDB) {
+          for (var dbName in data.indexedDB) {
+            var stores = data.indexedDB[dbName];
+            if (!stores) continue;
+            var rawBlocks = stores.blocks || stores['blocks'];
+            if (!rawBlocks || !Array.isArray(rawBlocks)) continue;
+
+            var chunks = [];
+            var totalLen = 0;
+            for (var idx = 0; idx < rawBlocks.length; idx++) {
+              var b = rawBlocks[idx];
+              var val = (b && b.value !== undefined) ? b.value : b;
+              if (val && typeof val === 'object' && !(val instanceof Uint8Array)) {
+                var keys = Object.keys(val).filter(function(k) { return !isNaN(k); });
+                if (keys.length > 0) {
+                  keys.sort(function(a, b) { return Number(a) - Number(b); });
+                  var arr = new Uint8Array(keys.length);
+                  for (var k = 0; k < keys.length; k++) {
+                    arr[k] = val[keys[k]];
+                  }
+                  val = arr;
+                }
+              }
+              if (val instanceof Uint8Array) {
+                chunks.push(val);
+                totalLen += val.length;
+              }
+            }
+            if (totalLen > 0) {
+              dbBytes = new Uint8Array(totalLen);
+              var offset = 0;
+              for (var c = 0; c < chunks.length; c++) {
+                dbBytes.set(chunks[c], offset);
+                offset += chunks[c].length;
+              }
+              break;
+            }
+          }
+        }
+
+        if (dbBytes && dbBytes.length > 0) {
+          // Delete existing DB
+          await new Promise(function(resolve) {
+            var del = window.indexedDB.deleteDatabase('libretrac');
+            del.onsuccess = resolve;
+            del.onerror = resolve;
+            del.onblocked = resolve;
+            setTimeout(resolve, 1500);
+          });
+
+          // Rebuild at Version 1 with files and blocks
+          await new Promise(function(resolve, reject) {
+            var req = window.indexedDB.open('libretrac', 1);
+            req.onupgradeneeded = function() {
+              var db = req.result;
+              var f = db.createObjectStore('files', { autoIncrement: true });
+              try { f.createIndex('fileName', 'name', { unique: true }); } catch(_) {}
+              db.createObjectStore('blocks');
+            };
+            req.onerror = function() { reject(req.error); };
+            req.onsuccess = function() {
+              var db = req.result;
+              try {
+                var tx = db.transaction(['files', 'blocks'], 'readwrite');
+                var fStore = tx.objectStore('files');
+                var bStore = tx.objectStore('blocks');
+
+                fStore.put({ name: '/database', length: dbBytes.length }, 1);
+
+                var blockSize = 4096;
+                var total = Math.ceil(dbBytes.length / blockSize);
+                for (var i = 0; i < total; i++) {
+                  var off = i * blockSize;
+                  var end = Math.min(off + blockSize, dbBytes.length);
+                  bStore.put(dbBytes.subarray(off, end), [1, off]);
+                }
+                tx.oncomplete = function() { db.close(); resolve(); };
+                tx.onerror = function(err) { db.close(); reject(err); };
+              } catch(e) {
+                db.close();
+                reject(e);
+              }
+            };
+          });
+        }
+
+        return true;
+      } catch (err) {
+        console.error('restoreFromStorageBackup error:', err);
+        return false;
+      }
+    };
+
+    // 6. Extract SQLite table records from storage backup JSON using SQL.js
+    window.extractStorageBackupData = globalThis.extractStorageBackupData = async function(jsonStr) {
+      try {
+        var data = (typeof jsonStr === 'string') ? JSON.parse(jsonStr) : jsonStr;
+        if (!data) return null;
+
+        var out = {};
+        if (data.localStorage) {
+          out.localStorage = data.localStorage;
+          out.prefs = {};
+          for (var k in data.localStorage) {
+            out.prefs[k.replace(/^flutter\./, '')] = data.localStorage[k];
+          }
+        }
+
+        // Extract SQLite blocks
+        var dbBytes = null;
+        if (data.indexedDB) {
+          for (var dbName in data.indexedDB) {
+            var stores = data.indexedDB[dbName];
+            if (!stores) continue;
+            var rawBlocks = stores.blocks || stores['blocks'];
+            if (!rawBlocks || !Array.isArray(rawBlocks)) continue;
+
+            var chunks = [];
+            var totalLen = 0;
+            for (var idx = 0; idx < rawBlocks.length; idx++) {
+              var b = rawBlocks[idx];
+              var val = (b && b.value !== undefined) ? b.value : b;
+              if (val && typeof val === 'object' && !(val instanceof Uint8Array)) {
+                var keys = Object.keys(val).filter(function(k) { return !isNaN(k); });
+                if (keys.length > 0) {
+                  keys.sort(function(a, b) { return Number(a) - Number(b); });
+                  var arr = new Uint8Array(keys.length);
+                  for (var k = 0; k < keys.length; k++) {
+                    arr[k] = val[keys[k]];
+                  }
+                  val = arr;
+                }
+              }
+              if (val instanceof Uint8Array) {
+                chunks.push(val);
+                totalLen += val.length;
+              }
+            }
+            if (totalLen > 0) {
+              dbBytes = new Uint8Array(totalLen);
+              var offset = 0;
+              for (var c = 0; c < chunks.length; c++) {
+                dbBytes.set(chunks[c], offset);
+                offset += chunks[c].length;
+              }
+              break;
+            }
+          }
+        }
+
+        if (dbBytes && typeof initSqlJs === 'function') {
+          try {
+            var SQL = await initSqlJs({
+              locateFile: function(file) { return file; }
+            });
+            var db = new SQL.Database(dbBytes);
+            function queryTable(tbl) {
+              try {
+                var res = db.exec('SELECT * FROM ' + tbl);
+                if (!res || res.length === 0) return [];
+                var cols = res[0].columns;
+                var vals = res[0].values;
+                return vals.map(function(row) {
+                  var obj = {};
+                  cols.forEach(function(col, i) {
+                    var v = row[i];
+                    if (typeof v === 'number' && (col.includes('time') || col.includes('date') || col.includes('at')) && v > 0 && v < 10000000000) {
+                      v = v * 1000;
+                    }
+                    var camel = col.replace(/_([a-z])/g, function(g) { return g[1].toUpperCase(); });
+                    obj[camel] = v;
+                    obj[col] = v;
+                  });
+                  return obj;
+                });
+              } catch (_) {
+                return [];
+              }
+            }
+            out.substances = queryTable('substances');
+            out.moodEntries = queryTable('mood_entries');
+            out.sleepEntries = queryTable('sleep_entries');
+            out.reactionResults = queryTable('reaction_results');
+            out.stroopResults = queryTable('stroop_results');
+            out.goNoGoResults = queryTable('go_no_go_results');
+            out.digitSpanResults = queryTable('digit_span_results');
+            out.symbolSearchResults = queryTable('symbol_search_results');
+          } catch (sqlErr) {
+            console.warn('SQL.js table query error:', sqlErr);
+          }
+        }
+
+        return JSON.stringify(out);
+      } catch (e) {
+        console.error('extractStorageBackupData error:', e);
+        return null;
+      }
+    };
+
+    // 7. Verify and ensure IndexedDB shell is strictly Version 1 with 'files' and 'blocks' stores
+    // BEFORE starting Flutter engine to prevent Drift NotFoundError or VersionError.
+    window.ensureHealthyDatabase = globalThis.ensureHealthyDatabase = function() {
+      return new Promise(function(resolve) {
+        if (!('indexedDB' in window)) return resolve();
+        try {
+          var req = window.indexedDB.open('libretrac');
+          req.onerror = function() {
+            console.warn('IDB open error, rebuilding shell at Version 1...');
+            var del = window.indexedDB.deleteDatabase('libretrac');
+            del.onsuccess = del.onerror = del.onblocked = function() {
+              var fix = window.indexedDB.open('libretrac', 1);
+              fix.onupgradeneeded = function() {
+                var fdb = fix.result;
+                var fs = fdb.createObjectStore('files', { autoIncrement: true });
+                try { fs.createIndex('fileName', 'name', { unique: true }); } catch (_) {}
+                fdb.createObjectStore('blocks');
+              };
+              fix.onsuccess = function() {
+                fix.result.close();
+                resolve();
+              };
+              fix.onerror = function() { resolve(); };
+            };
+          };
+
+          req.onsuccess = function() {
+            var db = req.result;
+            var hasFiles = db.objectStoreNames.contains('files');
+            var hasBlocks = db.objectStoreNames.contains('blocks');
+            var ver = db.version;
+            db.close();
+
+            if (ver === 1 && hasFiles && hasBlocks) {
+              return resolve();
+            }
+
+            console.warn('IDB shell unhealthy (ver: ' + ver + ', files: ' + hasFiles + ', blocks: ' + hasBlocks + '), rebuilding...');
+            var delReq = window.indexedDB.deleteDatabase('libretrac');
+            delReq.onsuccess = delReq.onerror = delReq.onblocked = function() {
+              var fixReq = window.indexedDB.open('libretrac', 1);
+              fixReq.onupgradeneeded = function() {
+                var fdb = fixReq.result;
+                var fs = fdb.createObjectStore('files', { autoIncrement: true });
+                try { fs.createIndex('fileName', 'name', { unique: true }); } catch (_) {}
+                fdb.createObjectStore('blocks');
+              };
+              fixReq.onsuccess = function() {
+                fixReq.result.close();
+                resolve();
+              };
+              fixReq.onerror = function() { resolve(); };
+            };
+          };
+        } catch (e) {
+          console.warn('ensureHealthyDatabase exception:', e);
+          resolve();
+        }
+      });
+    };
+
     // Auto-unregister legacy service worker if present so existing users automatically
     // receive the updated app version without being trapped in stale ServiceWorker cache.
     if ('serviceWorker' in navigator) {
@@ -243,16 +528,20 @@
     <div class="loading-title">LibreTrac</div>
     <div class="loading-spinner"></div>
   </div>
+  <!-- Local SQL.js for client-side SQLite extraction -->
+  <script src="sql-wasm.js"></script>
+
   <script>
-    // Dynamic cache-busting loader for Flutter bootstrap
-    (function() {
+    // Ensure database shell is healthy at Version 1 with files and blocks stores
+    // BEFORE starting Flutter engine to prevent Drift NotFoundError or VersionError.
+    window.ensureHealthyDatabase().then(function() {
       var urlParams = new URLSearchParams(window.location.search);
       var buildTag = urlParams.get('v') || urlParams.get('cb') || Date.now();
       var s = document.createElement('script');
       s.src = 'flutter_bootstrap.js?v=' + buildTag;
       s.async = true;
       document.body.appendChild(s);
-    })();
+    });
   </script>
 </body>
 </html>

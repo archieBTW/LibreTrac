@@ -6,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:libretrac/features/cognitive/model/cog_test_kind.dart';
 import 'package:libretrac/features/mood_sleep/model/dream_metadata.dart';
 import 'package:libretrac/services/streak_popup_service.dart';
@@ -137,6 +138,8 @@ extension BackupOps on AppDatabase {
 
   Future<Map<String, dynamic>> exportData() async {
     final prefs = await SharedPreferences.getInstance();
+
+    // 1. Custom metrics
     final rawMetrics = prefs.getString('custom_metrics');
     List customMetrics = [];
     if (rawMetrics != null) {
@@ -146,16 +149,29 @@ extension BackupOps on AppDatabase {
       } catch (_) {}
     }
 
-    final rawLogs = prefs.getStringList('medication_dose_logs') ?? [];
-    final doseLogs = <dynamic>[];
-    for (final s in rawLogs) {
+    // 2. Medication dose logs: check BOTH getString (used by notifier) and getStringList
+    final List doseLogs = [];
+    final rawLogsStr = prefs.getString('medication_dose_logs');
+    if (rawLogsStr != null && rawLogsStr.isNotEmpty) {
       try {
-        doseLogs.add(jsonDecode(s));
-      } catch (_) {
-        doseLogs.add(s);
+        final decoded = jsonDecode(rawLogsStr);
+        if (decoded is List) doseLogs.addAll(decoded);
+      } catch (_) {}
+    }
+    if (doseLogs.isEmpty) {
+      final rawLogsList = prefs.getStringList('medication_dose_logs');
+      if (rawLogsList != null) {
+        for (final s in rawLogsList) {
+          try {
+            doseLogs.add(jsonDecode(s));
+          } catch (_) {
+            doseLogs.add(s);
+          }
+        }
       }
     }
 
+    // 3. Medication frequencies and custom order
     final rawDosesPerDay = prefs.getString('medication_doses_per_day');
     dynamic dosesPerDay;
     if (rawDosesPerDay != null) {
@@ -163,38 +179,70 @@ extension BackupOps on AppDatabase {
         dosesPerDay = jsonDecode(rawDosesPerDay);
       } catch (_) {}
     }
-
     final substanceOrder = prefs.getStringList('substanceOrder') ?? [];
+
+    // 4. Dream & AI settings
     final dreamLensPreset = prefs.getString('dream_lens_preset');
-    final dreamCustomInstructions = prefs.getString('dream_custom_instructions');
+    final dreamCustomInstructions =
+        prefs.getString('dream_custom_instructions');
+
+    // 5. User Profile
+    final userProfile = {
+      'username': prefs.getString('user_profile_username') ?? 'LibreUser',
+      'picture': prefs.getString('user_profile_picture'),
+      'bloodType': prefs.getString('user_profile_blood_type'),
+      'birthday': prefs.getString('user_profile_birthday'),
+      'height': prefs.getString('user_profile_height'),
+      'weight': prefs.getString('user_profile_weight'),
+    };
+
+    // 6. Theme, Streaks, Reminders & AI settings
+    final settings = {
+      'themeMode': prefs.getString('theme_mode'),
+      'accentColor': prefs.getString('accent_color'),
+      'geminiApiKey': prefs.getString('gemini_api_key'),
+      'geminiModel': prefs.getString('gemini_model'),
+      'dreamLensPreset': dreamLensPreset,
+      'dreamCustomInstructions': dreamCustomInstructions,
+      'streakCount': prefs.getInt('streak_count'),
+      'lastCheckInDate': prefs.getString('last_check_in_date'),
+      'dailyReminders': prefs.getBool('daily_reminders'),
+    };
+
+    // 7. Full SharedPreferences snapshot for complete portability
+    final allPrefs = await exportSharedPrefs();
+
+    Future<List<Map<String, dynamic>>> safeTable(
+      Future<List<drift.DataClass>> Function() query,
+    ) async {
+      try {
+        final rows = await query();
+        return rows.map((e) => e.toJson()).toList();
+      } catch (e) {
+        debugPrint('safeTable export warning: $e');
+        return [];
+      }
+    }
 
     return {
-      'substances':
-          (await select(substances).get()).map((e) => e.toJson()).toList(),
-      'moodEntries':
-          (await select(moodEntries).get()).map((e) => e.toJson()).toList(),
-      'sleepEntries':
-          (await select(sleepEntries).get()).map((e) => e.toJson()).toList(),
-      'reactionResults':
-          (await select(reactionResults).get()).map((e) => e.toJson()).toList(),
-      'stroopResults':
-          (await select(stroopResults).get()).map((e) => e.toJson()).toList(),
-      'goNoGoResults':
-          (await select(goNoGoResults).get()).map((e) => e.toJson()).toList(),
-      'digitSpanResults':
-          (await select(digitSpanResults).get())
-              .map((e) => e.toJson())
-              .toList(),
+      'substances': await safeTable(() => select(substances).get()),
+      'moodEntries': await safeTable(() => select(moodEntries).get()),
+      'sleepEntries': await safeTable(() => select(sleepEntries).get()),
+      'reactionResults': await safeTable(() => select(reactionResults).get()),
+      'stroopResults': await safeTable(() => select(stroopResults).get()),
+      'goNoGoResults': await safeTable(() => select(goNoGoResults).get()),
+      'digitSpanResults': await safeTable(() => select(digitSpanResults).get()),
       'symbolSearchResults':
-          (await select(symbolSearchResults).get())
-              .map((e) => e.toJson())
-              .toList(),
+          await safeTable(() => select(symbolSearchResults).get()),
       'customMetrics': customMetrics,
       'medicationDoseLogs': doseLogs,
       'medicationDosesPerDay': dosesPerDay,
       'substanceOrder': substanceOrder,
       'dreamLensPreset': dreamLensPreset,
       'dreamCustomInstructions': dreamCustomInstructions,
+      'userProfile': userProfile,
+      'settings': settings,
+      'prefs': allPrefs,
     };
   }
 
@@ -228,27 +276,82 @@ extension BackupOps on AppDatabase {
   //   );
   // }
 
+  static DateTime? parseDateTime(dynamic val) {
+    if (val == null) return null;
+    if (val is DateTime) return val;
+    if (val is num) {
+      final intVal = val.toInt();
+      // If timestamp is in seconds (< 10 billion, which is ~year 2286 in seconds)
+      // 10 billion ms is only April 1970. All modern timestamps in ms are ~1.7 trillion.
+      if (intVal < 10000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(intVal * 1000);
+      }
+      return DateTime.fromMillisecondsSinceEpoch(intVal);
+    }
+    if (val is String) {
+      final trimmed = val.trim();
+      if (trimmed.isEmpty) return null;
+      final numVal = num.tryParse(trimmed);
+      if (numVal != null) {
+        return parseDateTime(numVal);
+      }
+      final dt = DateTime.tryParse(trimmed);
+      if (dt != null) return dt;
+
+      try {
+        return DateFormat('yyyy-MM-dd HH:mm').parse(trimmed);
+      } catch (_) {}
+      try {
+        return DateFormat('yyyy-MM-dd').parse(trimmed);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  static double parseDouble(dynamic val, [double defaultVal = 0.0]) {
+    if (val == null) return defaultVal;
+    if (val is num) return val.toDouble();
+    if (val is String) return double.tryParse(val) ?? defaultVal;
+    return defaultVal;
+  }
+
+  static int parseInt(dynamic val, [int defaultVal = 0]) {
+    if (val == null) return defaultVal;
+    if (val is num) return val.toInt();
+    if (val is String) {
+      return int.tryParse(val) ??
+          (double.tryParse(val)?.toInt() ?? defaultVal);
+    }
+    return defaultVal;
+  }
+
   MoodEntry moodEntryFromJson(Map<String, dynamic> json) {
-    final rawMetrics = json['customMetrics'];
+    final rawMetrics = json['customMetrics'] ?? json['custom_metrics'];
     Map<String, int>? customMetrics;
 
     if (rawMetrics is String) {
       try {
-        final decoded = jsonDecode(rawMetrics) as Map<String, dynamic>;
-        customMetrics = decoded.map((k, v) => MapEntry(k, (v as num).toInt()));
+        final decoded = jsonDecode(rawMetrics);
+        if (decoded is Map) {
+          customMetrics = decoded.map(
+            (k, v) => MapEntry(k.toString(), parseInt(v)),
+          );
+        }
       } catch (_) {}
-    } else if (rawMetrics is Map<String, dynamic>) {
-      customMetrics = rawMetrics.map((k, v) => MapEntry(k, (v as num).toInt()));
+    } else if (rawMetrics is Map) {
+      customMetrics = rawMetrics.map(
+        (k, v) => MapEntry(k.toString(), parseInt(v)),
+      );
     }
 
+    final id = parseInt(json['id']);
+    final ts = parseDateTime(json['timestamp']) ?? DateTime.now();
+
     return MoodEntry(
-      id: json['id'] as int,
-      timestamp:
-          json['timestamp'] is int
-              ? DateTime.fromMillisecondsSinceEpoch(json['timestamp'] as int)
-              : DateTime.parse(json['timestamp'] as String),
+      id: id,
+      timestamp: ts,
       customMetrics: customMetrics,
-      notes: json['notes'] as String?,
+      notes: json['notes']?.toString(),
     );
   }
 
@@ -265,7 +368,7 @@ extension BackupOps on AppDatabase {
           ..addFile(ArchiveFile('prefs.json', prefsBytes.length, prefsBytes));
 
     final zipEncoder = ZipEncoder();
-    final zipData = zipEncoder.encode(archive)!;
+    final zipData = zipEncoder.encode(archive);
 
     return Uint8List.fromList(zipData);
   }
@@ -275,116 +378,451 @@ extension BackupOps on AppDatabase {
       ..where((tbl) => tbl.timestamp.isBetweenValues(from, to))).get();
   }
 
-  /* ── IMPORT (⚠ overwrites everything) ───────────────────────────────── */
+  /* ── IMPORT (Resilient, Safe, Non-Destructive on error) ─────────────── */
   Future<void> importData(Map<String, dynamic> json) async {
-    // Load customMetrics if present
-    final metricList = json['customMetrics'];
-    if (metricList != null && metricList is List) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('custom_metrics', jsonEncode(metricList));
-    }
-
-    // Load medication dose logs, frequencies, order, and dream settings if present
     final prefs = await SharedPreferences.getInstance();
-    if (json['medicationDoseLogs'] is List) {
-      final list = (json['medicationDoseLogs'] as List)
-          .map((e) => jsonEncode(e))
-          .toList();
-      await prefs.setStringList('medication_dose_logs', list);
-    }
-    if (json['medicationDosesPerDay'] != null) {
-      await prefs.setString(
-        'medication_doses_per_day',
-        jsonEncode(json['medicationDosesPerDay']),
-      );
-    }
-    if (json['substanceOrder'] is List) {
-      await prefs.setStringList(
-        'substanceOrder',
-        (json['substanceOrder'] as List).map((e) => e.toString()).toList(),
-      );
-    }
-    if (json['dreamLensPreset'] is String) {
-      await prefs.setString('dream_lens_preset', json['dreamLensPreset'] as String);
-    }
-    if (json['dreamCustomInstructions'] is String) {
-      await prefs.setString(
-        'dream_custom_instructions',
-        json['dreamCustomInstructions'] as String,
-      );
+
+    // 1. Load customMetrics if present (handles both List and JSON string)
+    final metricList = json['customMetrics'] ?? json['custom_metrics'];
+    if (metricList is List) {
+      await prefs.setString('custom_metrics', jsonEncode(metricList));
+    } else if (metricList is String && metricList.isNotEmpty) {
+      await prefs.setString('custom_metrics', metricList);
     }
 
-    await transaction(() async {
-      // 1. wipe
-      await batch(
-        (b) =>
-            b
-              ..deleteAll(substances)
-              ..deleteAll(moodEntries)
-              ..deleteAll(reactionResults)
-              ..deleteAll(stroopResults)
-              ..deleteAll(goNoGoResults)
-              ..deleteAll(digitSpanResults)
-              ..deleteAll(symbolSearchResults)
-              ..deleteAll(sleepEntries),
-      );
-
-      // 2. helper – takes raw JSON → companion → insert
-      Future<void> _addAll<L, D>(
-        List<dynamic>? list,
-        drift.Insertable<D> Function(Map<String, dynamic>) toCompanion,
-        drift.TableInfo<drift.Table, D> table,
-      ) async {
-        if (list == null) return;
-        for (final row in list) {
-          await into(table).insert(toCompanion(Map<String, dynamic>.from(row)));
-        }
+    // 2. Load medication dose logs: write BOTH setString (expected by notifier) AND setStringList
+    final rawDoseLogs =
+        json['medicationDoseLogs'] ?? json['medication_dose_logs'];
+    if (rawDoseLogs != null) {
+      List<dynamic> logsList = [];
+      if (rawDoseLogs is String && rawDoseLogs.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawDoseLogs);
+          if (decoded is List) logsList = decoded;
+        } catch (_) {}
+      } else if (rawDoseLogs is List) {
+        logsList = rawDoseLogs;
       }
 
-      await _addAll(
-        json['substances'],
-        (m) => Substance.fromJson(m).toCompanion(true),
-        substances,
-      );
-      await _addAll(
-        json['moodEntries'],
-        (m) => moodEntryFromJson(m).toCompanion(true),
-        moodEntries,
-      );
+      final stringList = <String>[];
+      final objectList = <dynamic>[];
+      for (final item in logsList) {
+        if (item is String) {
+          stringList.add(item);
+          try {
+            objectList.add(jsonDecode(item));
+          } catch (_) {
+            objectList.add(item);
+          }
+        } else {
+          stringList.add(jsonEncode(item));
+          objectList.add(item);
+        }
+      }
+      await prefs.setString('medication_dose_logs', jsonEncode(objectList));
+      await prefs.setStringList('medication_dose_logs', stringList);
+    }
 
-      await _addAll(
-        json['reactionResults'],
-        (m) => ReactionResult.fromJson(m).toCompanion(true),
-        reactionResults,
+    // 3. Medication doses per day
+    final dosesPerDay =
+        json['medicationDosesPerDay'] ?? json['medication_doses_per_day'];
+    if (dosesPerDay != null) {
+      await prefs.setString(
+        'medication_doses_per_day',
+        dosesPerDay is String ? dosesPerDay : jsonEncode(dosesPerDay),
       );
-      await _addAll(
-        json['stroopResults'],
-        (m) => StroopResult.fromJson(m).toCompanion(true),
-        stroopResults,
+    }
+
+    // 4. Custom substance order
+    final substanceOrder = json['substanceOrder'] ?? json['substance_order'];
+    if (substanceOrder is List) {
+      await prefs.setStringList(
+        'substanceOrder',
+        substanceOrder.map((e) => e.toString()).toList(),
       );
-      await _addAll(
-        json['goNoGoResults'],
-        (m) => GoNoGoResult.fromJson(m).toCompanion(true),
-        goNoGoResults,
-      );
-      await _addAll(
-        json['digitSpanResults'],
-        (m) => DigitSpanResult.fromJson(m).toCompanion(true),
-        digitSpanResults,
-      );
-      await _addAll(
-        json['symbolSearchResults'],
-        (m) => SymbolSearchResult.fromJson(m).toCompanion(true),
-        symbolSearchResults,
-      );
-      await _addAll(
-        json['sleepEntries'],
-        (m) => SleepEntry.fromJson(m).toCompanion(true),
-        sleepEntries,
-      );
-    });
+    }
+
+    // 5. User Profile
+    final profile = json['userProfile'] ?? json['user_profile'];
+    if (profile is Map) {
+      final username = profile['username'];
+      if (username != null) {
+        await prefs.setString('user_profile_username', username.toString());
+      }
+      final pic = profile['picture'] ??
+          profile['profilePicture'] ??
+          profile['profile_picture'];
+      if (pic != null) {
+        await prefs.setString('user_profile_picture', pic.toString());
+      }
+      final blood = profile['bloodType'] ?? profile['blood_type'];
+      if (blood != null) {
+        await prefs.setString('user_profile_blood_type', blood.toString());
+      }
+      final bday = profile['birthday'];
+      if (bday != null) {
+        await prefs.setString('user_profile_birthday', bday.toString());
+      }
+      final height = profile['height'];
+      if (height != null) {
+        await prefs.setString('user_profile_height', height.toString());
+      }
+      final weight = profile['weight'];
+      if (weight != null) {
+        await prefs.setString('user_profile_weight', weight.toString());
+      }
+    }
+
+    // 6. Settings, Theme, AI & Streaks
+    final settings = json['settings'];
+    if (settings is Map) {
+      final tm = settings['themeMode'] ?? settings['theme_mode'];
+      if (tm != null) {
+        await prefs.setString('theme_mode', tm.toString());
+      }
+      final ac = settings['accentColor'] ?? settings['accent_color'];
+      if (ac != null) {
+        await prefs.setString('accent_color', ac.toString());
+      }
+      final key = settings['geminiApiKey'] ?? settings['gemini_api_key'];
+      if (key != null) {
+        await prefs.setString('gemini_api_key', key.toString());
+      }
+      final model = settings['geminiModel'] ?? settings['gemini_model'];
+      if (model != null) {
+        await prefs.setString('gemini_model', model.toString());
+      }
+      final preset =
+          settings['dreamLensPreset'] ?? settings['dream_lens_preset'];
+      if (preset != null) {
+        await prefs.setString('dream_lens_preset', preset.toString());
+      }
+      final instr = settings['dreamCustomInstructions'] ??
+          settings['dream_custom_instructions'];
+      if (instr != null) {
+        await prefs.setString('dream_custom_instructions', instr.toString());
+      }
+      final streak = settings['streakCount'] ?? settings['streak_count'];
+      if (streak is int) {
+        await prefs.setInt('streak_count', streak);
+      } else if (streak != null) {
+        final parsed = int.tryParse('$streak');
+        if (parsed != null) await prefs.setInt('streak_count', parsed);
+      }
+      final lastCheckIn =
+          settings['lastCheckInDate'] ?? settings['last_check_in_date'];
+      if (lastCheckIn != null) {
+        await prefs.setString('last_check_in_date', lastCheckIn.toString());
+      }
+      final reminders =
+          settings['dailyReminders'] ?? settings['daily_reminders'];
+      if (reminders is bool) {
+        await prefs.setBool('daily_reminders', reminders);
+      } else if (reminders != null) {
+        await prefs.setBool('daily_reminders', reminders.toString() == 'true');
+      }
+    }
+
+    // 7. Dream Lens fallback
+    final dreamLens = json['dreamLensPreset'] ?? json['dream_lens_preset'];
+    if (dreamLens is String && dreamLens.isNotEmpty) {
+      await prefs.setString('dream_lens_preset', dreamLens);
+    }
+    final dreamInstr =
+        json['dreamCustomInstructions'] ?? json['dream_custom_instructions'];
+    if (dreamInstr is String && dreamInstr.isNotEmpty) {
+      await prefs.setString('dream_custom_instructions', dreamInstr);
+    }
+
+    // 8. Restore raw SharedPreferences if present
+    final rawPrefs = json['prefs'] ?? json['localStorage'];
+    if (rawPrefs is Map) {
+      for (final entry in rawPrefs.entries) {
+        var k = entry.key.toString();
+        if (k.startsWith('flutter.')) {
+          k = k.substring('flutter.'.length);
+        }
+        final v = entry.value;
+        if (v is bool) {
+          await prefs.setBool(k, v);
+        } else if (v is int) {
+          await prefs.setInt(k, v);
+        } else if (v is double) {
+          await prefs.setDouble(k, v);
+        } else if (v is String) {
+          await prefs.setString(k, v);
+        } else if (v is List && v.every((e) => e is String)) {
+          await prefs.setStringList(k, List<String>.from(v));
+        } else if (v is Map || v is List) {
+          await prefs.setString(k, jsonEncode(v));
+        }
+      }
+    }
+
+    // Helper: Find list from map using multiple key variants
+    List<dynamic>? findList(List<String> keys) {
+      for (final k in keys) {
+        if (json.containsKey(k) && json[k] is List) {
+          return json[k] as List<dynamic>;
+        }
+      }
+      return null;
+    }
+
+    // 3. Pre-parse all table records safely outside of the transaction
+    final rawSubstances = findList(['substances']);
+    final List<SubstancesCompanion> parsedSubstances = [];
+    if (rawSubstances != null) {
+      for (final r in rawSubstances) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedSubstances.add(
+            SubstancesCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              name: drift.Value((m['name'] ?? 'Unnamed').toString()),
+              dosage: drift.Value(m['dosage']?.toString()),
+              notes: drift.Value(m['notes']?.toString()),
+              addedAt: drift.Value(
+                parseDateTime(m['addedAt'] ?? m['added_at']) ?? DateTime.now(),
+              ),
+              stoppedAt: drift.Value(
+                parseDateTime(m['stoppedAt'] ?? m['stopped_at']),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawMoods = findList(['moodEntries', 'mood_entries']);
+    final List<MoodEntriesCompanion> parsedMoods = [];
+    if (rawMoods != null) {
+      for (final r in rawMoods) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          final rawMetrics = m['customMetrics'] ?? m['custom_metrics'];
+          Map<String, int>? metrics;
+          if (rawMetrics is String) {
+            try {
+              final d = jsonDecode(rawMetrics);
+              if (d is Map) {
+                metrics = d.map((k, v) => MapEntry(k.toString(), parseInt(v)));
+              }
+            } catch (_) {}
+          } else if (rawMetrics is Map) {
+            metrics = rawMetrics.map(
+              (k, v) => MapEntry(k.toString(), parseInt(v)),
+            );
+          }
+
+          parsedMoods.add(
+            MoodEntriesCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              customMetrics: drift.Value(metrics),
+              notes: drift.Value(m['notes']?.toString()),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawSleep = findList(['sleepEntries', 'sleep_entries']);
+    final List<SleepEntriesCompanion> parsedSleep = [];
+    if (rawSleep != null) {
+      for (final r in rawSleep) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          final date = parseDateTime(m['date']) ?? DateTime.now();
+          parsedSleep.add(
+            SleepEntriesCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              date: drift.Value(date),
+              hoursSlept: drift.Value(
+                parseDouble(m['hoursSlept'] ?? m['hours_slept'], 0.0),
+              ),
+              dreamJournal: drift.Value(
+                (m['dreamJournal'] ?? m['dream_journal'])?.toString(),
+              ),
+              quality: drift.Value(parseInt(m['quality'], 3)),
+              createdAt: drift.Value(
+                parseDateTime(m['createdAt'] ?? m['created_at']) ?? date,
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawReactions = findList(['reactionResults', 'reaction_results']);
+    final List<ReactionResultsCompanion> parsedReactions = [];
+    if (rawReactions != null) {
+      for (final r in rawReactions) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedReactions.add(
+            ReactionResultsCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              averageTime: drift.Value(
+                parseDouble(m['averageTime'] ?? m['average_time']),
+              ),
+              fastest: drift.Value(parseDouble(m['fastest'])),
+              slowest: drift.Value(parseDouble(m['slowest'])),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawStroop = findList(['stroopResults', 'stroop_results']);
+    final List<StroopResultsCompanion> parsedStroop = [];
+    if (rawStroop != null) {
+      for (final r in rawStroop) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedStroop.add(
+            StroopResultsCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              congruentMs: drift.Value(
+                parseDouble(m['congruentMs'] ?? m['congruent_ms']),
+              ),
+              incongruentMs: drift.Value(
+                parseDouble(m['incongruentMs'] ?? m['incongruent_ms']),
+              ),
+              deltaMs: drift.Value(
+                parseDouble(m['deltaMs'] ?? m['delta_ms']),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawGoNoGo = findList(['goNoGoResults', 'go_no_go_results']);
+    final List<GoNoGoResultsCompanion> parsedGoNoGo = [];
+    if (rawGoNoGo != null) {
+      for (final r in rawGoNoGo) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedGoNoGo.add(
+            GoNoGoResultsCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              meanRt: drift.Value(
+                parseDouble(m['meanRt'] ?? m['mean_rt']),
+              ),
+              commissionErrors: drift.Value(
+                parseInt(m['commissionErrors'] ?? m['commission_errors']),
+              ),
+              omissionErrors: drift.Value(
+                parseInt(m['omissionErrors'] ?? m['omission_errors']),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawDigitSpan = findList(['digitSpanResults', 'digit_span_results']);
+    final List<DigitSpanResultsCompanion> parsedDigitSpan = [];
+    if (rawDigitSpan != null) {
+      for (final r in rawDigitSpan) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedDigitSpan.add(
+            DigitSpanResultsCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              bestSpan: drift.Value(
+                parseInt(m['bestSpan'] ?? m['best_span']),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    final rawSymbols = findList(['symbolSearchResults', 'symbol_search_results']);
+    final List<SymbolSearchResultsCompanion> parsedSymbols = [];
+    if (rawSymbols != null) {
+      for (final r in rawSymbols) {
+        if (r is Map) {
+          final m = Map<String, dynamic>.from(r);
+          final idVal = m['id'] != null ? parseInt(m['id']) : null;
+          parsedSymbols.add(
+            SymbolSearchResultsCompanion(
+              id: idVal != null ? drift.Value(idVal) : const drift.Value.absent(),
+              timestamp: drift.Value(
+                parseDateTime(m['timestamp']) ?? DateTime.now(),
+              ),
+              hits: drift.Value(parseInt(m['hits'])),
+              total: drift.Value(parseInt(m['total'])),
+              meanRt: drift.Value(
+                parseDouble(m['meanRt'] ?? m['mean_rt']),
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    // 4. Safely insert parsed records table-by-table
+    Future<void> replaceTable<D>(
+      drift.TableInfo<drift.Table, D> table,
+      List<drift.Insertable<D>> items,
+    ) async {
+      if (items.isEmpty) return;
+      try {
+        await delete(table).go();
+        for (final item in items) {
+          try {
+            await into(table)
+                .insert(item, mode: drift.InsertMode.insertOrReplace);
+          } catch (e) {
+            debugPrint('Insert warning on ${table.actualTableName}: $e');
+          }
+        }
+      } catch (e) {
+        debugPrint('Replace table warning on ${table.actualTableName}: $e');
+      }
+    }
+
+    await replaceTable(substances, parsedSubstances);
+    await replaceTable(moodEntries, parsedMoods);
+    await replaceTable(sleepEntries, parsedSleep);
+    await replaceTable(reactionResults, parsedReactions);
+    await replaceTable(stroopResults, parsedStroop);
+    await replaceTable(goNoGoResults, parsedGoNoGo);
+    await replaceTable(digitSpanResults, parsedDigitSpan);
+    await replaceTable(symbolSearchResults, parsedSymbols);
   }
 }
+
+// Top-level resilient parsers for database, backup, and settings operations
+DateTime? parseDateTime(dynamic val) => BackupOps.parseDateTime(val);
+double parseDouble(dynamic val, [double defaultVal = 0.0]) =>
+    BackupOps.parseDouble(val, defaultVal);
+int parseInt(dynamic val, [int defaultVal = 0]) =>
+    BackupOps.parseInt(val, defaultVal);
 
 // NEW: enum + helper
 enum MoodWindow { week, month, threeMonths, sixMonths }
@@ -605,8 +1043,22 @@ class CustomMetric {
 
   Map<String, dynamic> toJson() => {'name': name, 'color': color.value};
 
-  factory CustomMetric.fromJson(Map<String, dynamic> json) =>
-      CustomMetric(name: json['name'], color: Color(json['color']));
+  factory CustomMetric.fromJson(Map<String, dynamic> json) {
+    Color parsedColor = const Color(0xFF2196F3);
+    final rawColor = json['color'];
+    if (rawColor is num) {
+      parsedColor = Color(rawColor.toInt());
+    } else if (rawColor is String) {
+      final s = rawColor.replaceAll('#', '');
+      final val = int.tryParse(s, radix: s.length > 6 ? 16 : 10) ??
+          int.tryParse(s, radix: 16);
+      if (val != null) parsedColor = Color(val);
+    }
+    return CustomMetric(
+      name: (json['name'] ?? 'Metric').toString(),
+      color: parsedColor,
+    );
+  }
 }
 
 final customMetricsProvider =

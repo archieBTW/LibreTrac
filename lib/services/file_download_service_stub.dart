@@ -23,3 +23,7 @@ bool openFilePlatform(
   String mimeType = 'application/octet-stream',
 }) =>
     false;
+
+Future<bool> restoreStorageBackupPlatform(String jsonStr) async => false;
+
+Future<String?> extractStorageBackupDataPlatform(String jsonStr) async => null;

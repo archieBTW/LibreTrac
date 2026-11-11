@@ -27,6 +27,12 @@ external JSBoolean? _jsOpenBlobFile(
   JSString mimeType,
 );
 
+@JS('restoreFromStorageBackup')
+external JSPromise<JSBoolean>? _jsRestoreFromStorageBackup(JSString jsonStr);
+
+@JS('extractStorageBackupData')
+external JSPromise<JSString?>? _jsExtractStorageBackupData(JSString jsonStr);
+
 bool canShareFilesPlatform() {
   try {
     return _jsCanShareFiles()?.toDart ?? false;
@@ -89,5 +95,27 @@ bool openFilePlatform(
     )?.toDart ?? false;
   } catch (_) {
     return false;
+  }
+}
+
+Future<bool> restoreStorageBackupPlatform(String jsonStr) async {
+  try {
+    final promise = _jsRestoreFromStorageBackup(jsonStr.toJS);
+    if (promise == null) return false;
+    final jsBool = await promise.toDart;
+    return jsBool.toDart;
+  } catch (_) {
+    return false;
+  }
+}
+
+Future<String?> extractStorageBackupDataPlatform(String jsonStr) async {
+  try {
+    final promise = _jsExtractStorageBackupData(jsonStr.toJS);
+    if (promise == null) return null;
+    final jsStr = await promise.toDart;
+    return jsStr?.toDart;
+  } catch (_) {
+    return null;
   }
 }

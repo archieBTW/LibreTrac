@@ -728,6 +728,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                 ],
                 const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.code_rounded, size: 20),
+                  label: const Text('Direct Download (.json)'),
+                  onPressed: () async {
+                    Navigator.pop(dialogCtx);
+                    final jsonBytes =
+                        Uint8List.fromList(utf8.encode(rawJsonText));
+                    final jsonFileName = fileName.replaceAll('.zip', '.json');
+                    if (kIsWeb) {
+                      await downloadFileToBrowser(
+                        jsonFileName,
+                        jsonBytes,
+                        mimeType: 'application/json',
+                      );
+                    } else {
+                      final tmpDir = await getTemporaryDirectory();
+                      final file = File('${tmpDir.path}/$jsonFileName');
+                      await file.writeAsBytes(jsonBytes);
+                      await Share.shareXFiles([XFile(file.path)]);
+                    }
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        SnackBar(
+                          content: Text('Downloading $jsonFileName…'),
+                          duration: const Duration(seconds: 4),
+                        ),
+                      );
+                    }
+                  },
+                ),
+                const SizedBox(height: 8),
                 TextButton.icon(
                   icon: const Icon(Icons.copy_rounded, size: 16),
                   label: const Text(
@@ -847,6 +878,69 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         final rawText = utf8.decode(fileBytes);
         final decoded = jsonDecode(rawText);
         if (decoded is Map<String, dynamic>) {
+          // If this is a direct storage backup containing indexedDB, restore on Web via JS helper
+          if (kIsWeb && decoded.containsKey('indexedDB')) {
+            // Priority 1: Extract SQLite tables in-memory via SQL.js directly into dataJson
+            final extractedJsonStr =
+                await extractStorageBackupDataOnWeb(rawText);
+            if (extractedJsonStr != null && extractedJsonStr.isNotEmpty) {
+              try {
+                final extractedMap = jsonDecode(extractedJsonStr);
+                if (extractedMap is Map<String, dynamic>) {
+                  dataJson = extractedMap;
+                  if (extractedMap.containsKey('prefs') &&
+                      extractedMap['prefs'] is Map) {
+                    prefsJson = Map<String, dynamic>.from(
+                      extractedMap['prefs'] as Map,
+                    );
+                  }
+                }
+              } catch (e) {
+                debugPrint('Extracted backup parse warning: $e');
+              }
+            }
+
+            // Priority 2 fallback: Rebuild IndexedDB blocks
+            if (dataJson == null) {
+              final ok = await restoreStorageBackupOnWeb(rawText);
+              if (ok) {
+                await ref.read(customMetricsProvider.notifier).reload();
+                await ref.read(userProfileProvider.notifier).reload();
+                await ref.read(themeModeProvider.notifier).reload();
+                await ref.read(accentColorProvider.notifier).reload();
+                await ref.read(medicationDoseLogsProvider.notifier).reload();
+                await ref.read(substanceOrderProvider.notifier).reload();
+                await ref.read(medicationDosesPerDayProvider.notifier).reload();
+                await _loadModelPref();
+
+                ref.invalidate(journalEntriesStreamProvider);
+                ref.invalidate(filteredMoodEntriesProvider);
+                ref.invalidate(moodEntriesStreamProvider);
+                ref.invalidate(sleepStreamProvider);
+                ref.invalidate(substancesStreamProvider);
+                ref.invalidate(activeSubstancesStreamProvider);
+                ref.invalidate(pastSubstancesStreamProvider);
+                ref.invalidate(weeklySleepStatsProvider);
+                ref.invalidate(reactionResultsStreamProvider);
+                ref.invalidate(stroopResultsStreamProvider);
+                ref.invalidate(goNoGoResultsStreamProvider);
+                ref.invalidate(digitSpanResultsStreamProvider);
+                ref.invalidate(symbolSearchResultsStreamProvider);
+
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Storage backup restored successfully with all check-ins and preferences!',
+                      ),
+                    ),
+                  );
+                }
+                return;
+              }
+            }
+          }
+
           if (decoded.containsKey('localStorage') &&
               decoded['localStorage'] is Map) {
             prefsJson = Map<String, dynamic>.from(
@@ -859,7 +953,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           if (decoded.containsKey('data') && decoded['data'] is Map) {
             dataJson = Map<String, dynamic>.from(decoded['data'] as Map);
           } else if (decoded.containsKey('moodEntries') ||
-              decoded.containsKey('substances')) {
+              decoded.containsKey('mood_entries') ||
+              decoded.containsKey('substances') ||
+              decoded.containsKey('sleepEntries') ||
+              decoded.containsKey('sleep_entries')) {
             dataJson = decoded;
           }
           if (dataJson == null && prefsJson == null) {
@@ -872,7 +969,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (prefsJson != null) {
         final prefs = await SharedPreferences.getInstance();
         for (final entry in prefsJson.entries) {
-          final key = entry.key;
+          var key = entry.key;
+          if (key.startsWith('flutter.')) {
+            key = key.substring('flutter.'.length);
+          }
           final value = entry.value;
 
           if (value is bool) {
@@ -887,6 +987,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             await prefs.setStringList(key, List<String>.from(value));
           } else if (value is Map || value is List) {
             await prefs.setString(key, jsonEncode(value));
+          }
+        }
+
+        // If dataJson wasn't explicitly extracted from a table list, populate from prefs
+        if (dataJson == null) {
+          dataJson = {};
+          if (prefsJson.containsKey('custom_metrics') ||
+              prefsJson.containsKey('flutter.custom_metrics')) {
+            final raw =
+                prefsJson['custom_metrics'] ?? prefsJson['flutter.custom_metrics'];
+            if (raw is String) {
+              try {
+                dataJson['customMetrics'] = jsonDecode(raw);
+              } catch (_) {}
+            } else if (raw is List) {
+              dataJson['customMetrics'] = raw;
+            }
+          }
+          if (prefsJson.containsKey('medication_dose_logs') ||
+              prefsJson.containsKey('flutter.medication_dose_logs')) {
+            final raw =
+                prefsJson['medication_dose_logs'] ??
+                prefsJson['flutter.medication_dose_logs'];
+            if (raw is List) {
+              dataJson['medicationDoseLogs'] = raw;
+            } else if (raw is String && raw.isNotEmpty) {
+              try {
+                final d = jsonDecode(raw);
+                if (d is List) dataJson['medicationDoseLogs'] = d;
+              } catch (_) {}
+            }
           }
         }
       }
@@ -906,10 +1037,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref.read(medicationDosesPerDayProvider.notifier).reload();
       await _loadModelPref();
 
-      // Force refresh of home screen data
+      // Force refresh of all stream data across screens
+      ref.invalidate(journalEntriesStreamProvider);
       ref.invalidate(filteredMoodEntriesProvider);
       ref.invalidate(moodEntriesStreamProvider);
       ref.invalidate(sleepStreamProvider);
+      ref.invalidate(substancesStreamProvider);
+      ref.invalidate(activeSubstancesStreamProvider);
+      ref.invalidate(pastSubstancesStreamProvider);
+      ref.invalidate(weeklySleepStatsProvider);
       ref.invalidate(reactionResultsStreamProvider);
       ref.invalidate(stroopResultsStreamProvider);
       ref.invalidate(goNoGoResultsStreamProvider);

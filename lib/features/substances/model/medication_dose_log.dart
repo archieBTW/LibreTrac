@@ -56,17 +56,27 @@ class MedicationDoseLog {
   };
 
   factory MedicationDoseLog.fromJson(Map<String, dynamic> json) {
+    final subName = (json['substanceName'] ??
+            json['substance'] ??
+            json['substance_name'] ??
+            'Unknown')
+        .toString();
+    final rawSubId = json['substanceId'] ?? json['substance_id'];
+    final subId = (rawSubId is num)
+        ? rawSubId.toInt()
+        : (int.tryParse('$rawSubId') ?? 0);
+    final rawTime = json['takenAt'] ?? json['taken_at'];
+    final taken = parseDateTime(rawTime) ?? DateTime.now();
+    final rawId =
+        json['id']?.toString() ?? '${subId}_${taken.microsecondsSinceEpoch}';
+
     return MedicationDoseLog(
-      id:
-          (json['id'] as String?) ??
-          '${json['substanceId']}_${json['takenAt']}',
-      substanceId: (json['substanceId'] as num?)?.toInt() ?? 0,
-      substanceName: (json['substanceName'] as String?) ?? 'Unknown',
-      dosage: json['dosage'] as String?,
-      takenAt:
-          DateTime.tryParse((json['takenAt'] as String?) ?? '') ??
-          DateTime.now(),
-      note: json['note'] as String?,
+      id: rawId,
+      substanceId: subId,
+      substanceName: subName,
+      dosage: json['dosage']?.toString(),
+      takenAt: taken,
+      note: json['note']?.toString(),
     );
   }
 }
@@ -181,19 +191,45 @@ class MedicationDoseNotifier extends StateNotifier<List<MedicationDoseLog>> {
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
+    List<dynamic>? rawList;
+
+    // 1. Try reading as JSON string
     final raw = prefs.getString(prefsKey);
-    if (raw == null || raw.isEmpty) {
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) rawList = decoded;
+      } catch (_) {}
+    }
+
+    // 2. Fallback: try reading as StringList
+    if (rawList == null) {
+      final listRaw = prefs.getStringList(prefsKey);
+      if (listRaw != null && listRaw.isNotEmpty) {
+        rawList = [];
+        for (final item in listRaw) {
+          try {
+            rawList.add(jsonDecode(item));
+          } catch (_) {
+            rawList.add(item);
+          }
+        }
+      }
+    }
+
+    if (rawList == null || rawList.isEmpty) {
       state = const [];
       return;
     }
+
     try {
-      final list = jsonDecode(raw) as List;
-      final logs =
-          list
-              .whereType<Map<String, dynamic>>()
-              .map(MedicationDoseLog.fromJson)
-              .toList()
-            ..sort((a, b) => b.takenAt.compareTo(a.takenAt));
+      final logs = <MedicationDoseLog>[];
+      for (final item in rawList) {
+        if (item is Map) {
+          logs.add(MedicationDoseLog.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+      logs.sort((a, b) => b.takenAt.compareTo(a.takenAt));
       state = logs;
     } catch (_) {
       state = const [];

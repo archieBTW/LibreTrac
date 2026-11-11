@@ -20,8 +20,18 @@ class MetricsConverter extends TypeConverter<Map<String, int>, String> {
 
   @override
   Map<String, int> fromSql(String fromDb) {
-    final rawMap = jsonDecode(fromDb) as Map<String, dynamic>;
-    return rawMap.map((key, value) => MapEntry(key, value as int));
+    try {
+      final rawMap = jsonDecode(fromDb);
+      if (rawMap is Map) {
+        return rawMap.map((key, value) {
+          final intVal = (value is num)
+              ? value.toInt()
+              : (int.tryParse('$value') ?? 0);
+          return MapEntry(key.toString(), intVal);
+        });
+      }
+    } catch (_) {}
+    return {};
   }
 
   @override

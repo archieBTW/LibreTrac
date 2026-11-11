@@ -26,3 +26,9 @@ bool openFileInNewTabOnWeb(
   String mimeType = 'application/octet-stream',
 }) =>
     openFilePlatform(fileName, bytes, mimeType: mimeType);
+
+Future<bool> restoreStorageBackupOnWeb(String jsonStr) =>
+    restoreStorageBackupPlatform(jsonStr);
+
+Future<String?> extractStorageBackupDataOnWeb(String jsonStr) =>
+    extractStorageBackupDataPlatform(jsonStr);

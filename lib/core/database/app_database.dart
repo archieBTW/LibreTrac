@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:libretrac/core/database/mood_entries.dart';
@@ -25,6 +26,9 @@ class AppDatabase extends _$AppDatabase {
   static final AppDatabase _instance = AppDatabase._();
 
   factory AppDatabase() => _instance;
+
+  @visibleForTesting
+  AppDatabase.forTesting(super.executor);
 
   @override
   int get schemaVersion => 2; // ← bumped

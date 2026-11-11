@@ -8,10 +8,20 @@
   <meta http-equiv="Expires" content="0">
   <title>LibreTrac Direct Backup & Recovery</title>
   <link rel="icon" type="image/png" href="favicon.png">
-  <!-- Load JSZip for client-side ZIP generation -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <!-- Load SQL.js for client-side SQLite extraction -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/sql-wasm.js"></script>
+  <!-- Load JSZip for client-side ZIP generation (local first, CDN fallback) -->
+  <script src="jszip.min.js"></script>
+  <script>
+    if (typeof JSZip === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\/script>');
+    }
+  </script>
+  <!-- Load SQL.js for client-side SQLite extraction (local first, CDN fallback) -->
+  <script src="sql-wasm.js"></script>
+  <script>
+    if (typeof initSqlJs === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/sql-wasm.js"><\/script>');
+    }
+  </script>
   <style>
     :root {
       --bg: #121214;
@@ -182,7 +192,7 @@
         📥 Restore & Convert Backup File
       </div>
       <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
-        Select your <code>libretrac_storage_backup_*.json</code> file to restore your database or convert it directly into the official LibreTrac <code>.zip</code> archive.
+        Select your <code>libretrac_storage_backup_*.json</code> file to inspect its contents, convert it to the official LibreTrac <code>.zip</code> archive, or directly restore your data into the browser.
       </p>
 
       <input type="file" id="restore-file-input" accept=".json" style="display: none;" onchange="handleFileSelected(event)" />
@@ -204,7 +214,7 @@
 
         <!-- Option B: Direct 1-Click Restore into Browser -->
         <button class="btn btn-green" onclick="executeFullRestore()">
-          ⚡ Restore to Browser Storage & Open LibreTrac
+          ⚡ 1-Click Restore to Browser & Launch App
         </button>
 
         <!-- Option C: Raw SQLite File -->
@@ -241,12 +251,15 @@
       </button>
     </div>
 
-    <!-- 4. Launch App Card -->
+    <!-- 4. Engine Repair & Launch Card -->
     <div class="card">
-      <div class="card-title">🚀 Launch LibreTrac</div>
+      <div class="card-title">🛠️ Troubleshooting & Launch</div>
       <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
-        Purges stale script cache and opens the latest version of LibreTrac while keeping all local database and preferences intact.
+        If you ever see "One of the specified object stores was not found", click below to repair the database shell.
       </p>
+      <button class="btn btn-outline" style="border-color: #3b82f6; color: #93c5fd;" onclick="repairDatabaseShell()">
+        🔧 Repair Database Engine Structure
+      </button>
       <button class="btn btn-green" onclick="forceAppRefresh()">
         🔄 Clear Script Cache & Open LibreTrac
       </button>
@@ -270,6 +283,7 @@
 
     var selectedBackupJson = null;
     var cachedDbBytes = null;
+    var parsedTableStats = null;
 
     function showToast(msg) {
       var t = document.getElementById('toast');
@@ -278,12 +292,12 @@
       setTimeout(function() { t.classList.remove('show'); }, 3500);
     }
 
-    function handleFileSelected(event) {
+    async function handleFileSelected(event) {
       var file = event.target.files[0];
       if (!file) return;
 
       var reader = new FileReader();
-      reader.onload = function(e) {
+      reader.onload = async function(e) {
         try {
           var data = JSON.parse(e.target.result);
           selectedBackupJson = data;
@@ -291,13 +305,6 @@
 
           var prefsCount = data.localStorage ? Object.keys(data.localStorage).length : 0;
           var dbNames = data.indexedDB ? Object.keys(data.indexedDB) : [];
-          var totalBlocks = 0;
-          for (var d = 0; d < dbNames.length; d++) {
-            var db = data.indexedDB[dbNames[d]];
-            if (db && db.blocks && Array.isArray(db.blocks)) {
-              totalBlocks += db.blocks.length;
-            }
-          }
 
           document.getElementById('restore-summary').textContent =
             '✓ Valid Backup Loaded: ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
@@ -307,10 +314,27 @@
             var sampleKeys = Object.keys(data.localStorage).slice(0, 6).join(', ');
             details.push('• <strong>Preferences & Dose Logs:</strong> ' + prefsCount + ' items (' + sampleKeys + (prefsCount > 6 ? '…' : '') + ')');
           }
-          if (dbNames.length > 0) {
-            var sizeKb = cachedDbBytes ? (cachedDbBytes.length / 1024).toFixed(1) : (totalBlocks * 4).toFixed(0);
-            details.push('• <strong>SQLite Database:</strong> ' + dbNames.join(', ') + ' (' + totalBlocks + ' blocks, ' + sizeKb + ' KB reconstructed)');
+
+          if (cachedDbBytes) {
+            var isSqlite = checkIsSqlite(cachedDbBytes);
+            var sizeKb = (cachedDbBytes.length / 1024).toFixed(1);
+            details.push('• <strong>SQLite Database:</strong> ' + (isSqlite ? 'Valid SQLite 3' : 'Raw Database') + ' (' + sizeKb + ' KB reconstructed)');
+
+            // Try inspecting tables with SQL.js to give the user exact row counts
+            parsedTableStats = await inspectSqliteTables(cachedDbBytes);
+            if (parsedTableStats) {
+              var statParts = [];
+              if (parsedTableStats.moodEntries !== undefined) statParts.push(parsedTableStats.moodEntries + ' check-ins');
+              if (parsedTableStats.sleepEntries !== undefined) statParts.push(parsedTableStats.sleepEntries + ' sleep logs');
+              if (parsedTableStats.substances !== undefined) statParts.push(parsedTableStats.substances + ' substances');
+              if (statParts.length > 0) {
+                details.push('• <strong>Verified Records:</strong> ' + statParts.join(', '));
+              }
+            }
+          } else {
+            details.push('• <strong>SQLite Database:</strong> No raw blocks found (preferences only)');
           }
+
           document.getElementById('restore-details').innerHTML = details.join('<br>');
           document.getElementById('restore-info').style.display = 'block';
           showToast('Backup file loaded! Choose an option below.');
@@ -321,122 +345,261 @@
       reader.readAsText(file);
     }
 
+    // Helper: Check if bytes start with SQLite magic header
+    function checkIsSqlite(bytes) {
+      if (!bytes || bytes.length < 16) return false;
+      var header = 'SQLite format 3\0';
+      for (var i = 0; i < 16; i++) {
+        if (bytes[i] !== header.charCodeAt(i)) return false;
+      }
+      return true;
+    }
+
     // Helper: Extract and assemble SQLite bytes from backup JSON blocks
     function extractDbBytesFromBackup(backup) {
       if (!backup || !backup.indexedDB) return null;
       var dbNames = Object.keys(backup.indexedDB);
       for (var i = 0; i < dbNames.length; i++) {
         var stores = backup.indexedDB[dbNames[i]];
-        if (stores && stores.blocks && Array.isArray(stores.blocks) && stores.blocks.length > 0) {
-          var chunks = [];
-          var totalLength = 0;
-          for (var idx = 0; idx < stores.blocks.length; idx++) {
-            var b = stores.blocks[idx];
+        if (!stores) continue;
+
+        // Find blocks store (could be stores.blocks, or stores['blocks'])
+        var rawBlocks = stores.blocks || stores['blocks'];
+        if (!rawBlocks) continue;
+
+        var chunks = [];
+        var totalLength = 0;
+
+        // If rawBlocks is an array
+        if (Array.isArray(rawBlocks)) {
+          for (var idx = 0; idx < rawBlocks.length; idx++) {
+            var b = rawBlocks[idx];
             var val = (b && b.value !== undefined) ? b.value : b;
+
+            // Handle object with numeric keys {"0": 83, "1": 81, ...}
             if (val && typeof val === 'object' && !(val instanceof Uint8Array)) {
               var keys = Object.keys(val).filter(function(k) { return !isNaN(k); });
               if (keys.length > 0) {
+                keys.sort(function(a, b) { return Number(a) - Number(b); });
                 var arr = new Uint8Array(keys.length);
                 for (var k = 0; k < keys.length; k++) {
-                  arr[k] = val[k];
+                  arr[k] = val[keys[k]];
                 }
                 val = arr;
               }
             }
+
             if (val instanceof Uint8Array) {
               chunks.push(val);
               totalLength += val.length;
             }
           }
-          if (totalLength > 0) {
-            var dbBytes = new Uint8Array(totalLength);
-            var offset = 0;
-            for (var c = 0; c < chunks.length; c++) {
-              dbBytes.set(chunks[c], offset);
-              offset += chunks[c].length;
-            }
-            return dbBytes;
+        }
+
+        if (totalLength > 0) {
+          var dbBytes = new Uint8Array(totalLength);
+          var offset = 0;
+          for (var c = 0; c < chunks.length; c++) {
+            dbBytes.set(chunks[c], offset);
+            offset += chunks[c].length;
           }
+          return dbBytes;
         }
       }
       return null;
     }
 
+    // Get SQL.js instance with local file priority and CDN fallback
+    async function getSqlJsInstance() {
+      if (typeof initSqlJs !== 'function') return null;
+      try {
+        return await initSqlJs({
+          locateFile: function(file) { return file; } // local sql-wasm.wasm
+        });
+      } catch (localErr) {
+        console.warn('Local SQL.js wasm failed, trying CDN fallback…', localErr);
+        try {
+          return await initSqlJs({
+            locateFile: function(file) {
+              return 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/' + file;
+            }
+          });
+        } catch (cdnErr) {
+          console.error('All SQL.js loaders failed:', cdnErr);
+          return null;
+        }
+      }
+    }
+
+    // Inspect SQLite tables using SQL.js
+    async function inspectSqliteTables(dbBytes) {
+      if (!dbBytes) return null;
+      try {
+        var SQL = await getSqlJsInstance();
+        if (!SQL) return null;
+        var db = new SQL.Database(dbBytes);
+        var stats = {};
+        function getCount(tbl) {
+          try {
+            var res = db.exec('SELECT COUNT(*) FROM ' + tbl);
+            return (res.length > 0 && res[0].values.length > 0) ? res[0].values[0][0] : 0;
+          } catch (_) {
+            return 0;
+          }
+        }
+        stats.moodEntries = getCount('mood_entries');
+        stats.sleepEntries = getCount('sleep_entries');
+        stats.substances = getCount('substances');
+        return stats;
+      } catch (e) {
+        console.warn('SQLite inspection error:', e);
+        return null;
+      }
+    }
+
     // Convert to official LibreTrac ZIP archive using SQL.js + JSZip
     async function convertAndDownloadZip() {
-      if (!selectedBackupJson) return;
+      if (!selectedBackupJson) {
+        alert('Please select a backup file first.');
+        return;
+      }
       showToast('Extracting SQLite tables & creating .zip…');
 
       var prefsJson = selectedBackupJson.localStorage || {};
       var dataJson = {};
 
+      // Clean prefsJson by stripping 'flutter.' prefix for standard portability
+      var cleanPrefs = {};
+      for (var k in prefsJson) {
+        var cleanKey = k.replace(/^flutter\./, '');
+        cleanPrefs[cleanKey] = prefsJson[k];
+      }
+
       // If we have assembled DB bytes, query tables with SQL.js
-      if (cachedDbBytes && typeof initSqlJs === 'function') {
+      if (cachedDbBytes) {
         try {
-          var SQL = await initSqlJs({
-            locateFile: function(file) {
-              return 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/' + file;
-            }
-          });
-          var db = new SQL.Database(cachedDbBytes);
+          var SQL = await getSqlJsInstance();
+          if (SQL) {
+            var db = new SQL.Database(cachedDbBytes);
 
-          // Helper to query table as array of objects
-          function queryTable(tblName) {
-            try {
-              var res = db.exec('SELECT * FROM ' + tblName);
-              if (res.length === 0) return [];
-              var cols = res[0].columns;
-              var vals = res[0].values;
-              return vals.map(function(row) {
-                var obj = {};
-                cols.forEach(function(c, i) {
-                  // Convert snake_case column names to camelCase for Drift compatibility
-                  var camelCol = c.replace(/_([a-z])/g, function(g) { return g[1].toUpperCase(); });
-                  obj[camelCol] = row[i];
+            // Helper to query table as array of objects
+            function queryTable(tblName) {
+              try {
+                var res = db.exec('SELECT * FROM ' + tblName);
+                if (!res || res.length === 0) return [];
+                var cols = res[0].columns;
+                var vals = res[0].values;
+                return vals.map(function(row) {
+                  var obj = {};
+                  cols.forEach(function(c, i) {
+                    var val = row[i];
+                    // If timestamp is stored in seconds (< 10 billion), convert to milliseconds for Drift serializer
+                    if (typeof val === 'number' && (c.includes('time') || c.includes('date') || c.includes('at')) && val > 0 && val < 10000000000) {
+                      val = val * 1000;
+                    }
+                    // Map snake_case to camelCase
+                    var camelCol = c.replace(/_([a-z])/g, function(g) { return g[1].toUpperCase(); });
+                    obj[camelCol] = val;
+                    // Also preserve raw column name for redundancy
+                    obj[c] = val;
+                  });
+                  return obj;
                 });
-                return obj;
-              });
-            } catch (_) {
-              return [];
+              } catch (_) {
+                return [];
+              }
             }
-          }
 
-          dataJson['substances'] = queryTable('substances');
-          dataJson['moodEntries'] = queryTable('mood_entries');
-          dataJson['sleepEntries'] = queryTable('sleep_entries');
-          dataJson['reactionResults'] = queryTable('reaction_results');
-          dataJson['stroopResults'] = queryTable('stroop_results');
-          dataJson['goNoGoResults'] = queryTable('go_no_go_results');
-          dataJson['digitSpanResults'] = queryTable('digit_span_results');
-          dataJson['symbolSearchResults'] = queryTable('symbol_search_results');
-
-          // Extract metrics and dose logs from prefs if present
-          if (prefsJson.custom_metrics) {
-            try { dataJson['customMetrics'] = JSON.parse(prefsJson.custom_metrics); } catch (_) { dataJson['customMetrics'] = prefsJson.custom_metrics; }
-          }
-          if (prefsJson.medication_dose_logs) {
-            var rawLogs = prefsJson.medication_dose_logs;
-            if (Array.isArray(rawLogs)) {
-              dataJson['medicationDoseLogs'] = rawLogs.map(function(s) { try { return JSON.parse(s); } catch(_) { return s; } });
-            }
-          }
-          if (prefsJson.substanceOrder) {
-            dataJson['substanceOrder'] = prefsJson.substanceOrder;
+            dataJson['substances'] = queryTable('substances');
+            dataJson['moodEntries'] = queryTable('mood_entries');
+            dataJson['sleepEntries'] = queryTable('sleep_entries');
+            dataJson['reactionResults'] = queryTable('reaction_results');
+            dataJson['stroopResults'] = queryTable('stroop_results');
+            dataJson['goNoGoResults'] = queryTable('go_no_go_results');
+            dataJson['digitSpanResults'] = queryTable('digit_span_results');
+            dataJson['symbolSearchResults'] = queryTable('symbol_search_results');
           }
         } catch (sqlErr) {
           console.warn('SQL.js table query error:', sqlErr);
         }
       }
 
+      // Extract metrics and dose logs from prefs if present
+      var customMetricsRaw = cleanPrefs.custom_metrics;
+      if (customMetricsRaw) {
+        try {
+          dataJson['customMetrics'] = JSON.parse(customMetricsRaw);
+        } catch (_) {
+          dataJson['customMetrics'] = customMetricsRaw;
+        }
+      }
+
+      var rawLogs = cleanPrefs.medication_dose_logs;
+      if (rawLogs) {
+        if (typeof rawLogs === 'string') {
+          try { rawLogs = JSON.parse(rawLogs); } catch(_) {}
+        }
+        if (Array.isArray(rawLogs)) {
+          dataJson['medicationDoseLogs'] = rawLogs.map(function(s) {
+            if (typeof s === 'string') {
+              try { return JSON.parse(s); } catch(_) { return s; }
+            }
+            return s;
+          });
+        }
+      }
+
+      var rawDosesPerDay = cleanPrefs.medication_doses_per_day;
+      if (rawDosesPerDay) {
+        try { dataJson['medicationDosesPerDay'] = JSON.parse(rawDosesPerDay); } catch(_) { dataJson['medicationDosesPerDay'] = rawDosesPerDay; }
+      }
+
+      var substanceOrderRaw = cleanPrefs.substanceOrder;
+      if (substanceOrderRaw) {
+        dataJson['substanceOrder'] = substanceOrderRaw;
+      }
+
+      var dreamPreset = cleanPrefs.dream_lens_preset;
+      if (dreamPreset) dataJson['dreamLensPreset'] = dreamPreset;
+
+      var dreamInstr = cleanPrefs.dream_custom_instructions;
+      if (dreamInstr) dataJson['dreamCustomInstructions'] = dreamInstr;
+
+      // User Profile
+      dataJson['userProfile'] = {
+        username: cleanPrefs['user_profile_username'] || 'LibreUser',
+        picture: cleanPrefs['user_profile_picture'],
+        bloodType: cleanPrefs['user_profile_blood_type'],
+        birthday: cleanPrefs['user_profile_birthday'],
+        height: cleanPrefs['user_profile_height'],
+        weight: cleanPrefs['user_profile_weight']
+      };
+
+      // Settings
+      dataJson['settings'] = {
+        themeMode: cleanPrefs['theme_mode'],
+        accentColor: cleanPrefs['accent_color'],
+        geminiApiKey: cleanPrefs['gemini_api_key'],
+        geminiModel: cleanPrefs['gemini_model'],
+        dreamLensPreset: dreamPreset,
+        dreamCustomInstructions: dreamInstr,
+        streakCount: cleanPrefs['streak_count'],
+        lastCheckInDate: cleanPrefs['last_check_in_date'],
+        dailyReminders: cleanPrefs['daily_reminders']
+      };
+
+      // Embed full preferences for comprehensive backup
+      dataJson['prefs'] = cleanPrefs;
+
       // Create ZIP using JSZip
       if (typeof JSZip !== 'function') {
-        alert('ZIP generator library not loaded. Please ensure you are connected to internet.');
+        alert('JSZip library not loaded. Please verify internet connection.');
         return;
       }
 
       var zip = new JSZip();
       zip.file('data.json', JSON.stringify(dataJson, null, 2));
-      zip.file('prefs.json', JSON.stringify(prefsJson, null, 2));
+      zip.file('prefs.json', JSON.stringify(cleanPrefs, null, 2));
 
       var zipContent = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
       var d = new Date();
@@ -472,7 +635,7 @@
       showToast('Downloaded ' + zipFileName + '! You can now import this file in LibreTrac Settings.');
     }
 
-    // Direct Browser Storage Restore (bulletproof store handling)
+    // Direct Browser Storage Restore (1-Click Restore)
     async function executeFullRestore() {
       if (!selectedBackupJson) {
         alert('Please select a backup JSON file first.');
@@ -480,144 +643,169 @@
       }
       showToast('Restoring database & preferences…');
 
-      var restoredPrefs = 0;
-      var restoredBlocks = 0;
-
       // 1. Restore localStorage
-      if (selectedBackupJson.localStorage) {
-        for (var key in selectedBackupJson.localStorage) {
-          var val = selectedBackupJson.localStorage[key];
-          if (typeof val === 'object') {
-            localStorage.setItem(key, JSON.stringify(val));
-          } else {
-            localStorage.setItem(key, String(val));
-          }
-          restoredPrefs++;
+      var restoredPrefs = restoreLocalStorageClean(selectedBackupJson.localStorage);
+
+      // 2. Restore IndexedDB SQLite Database
+      var restoredBlocks = 0;
+      if (cachedDbBytes) {
+        try {
+          restoredBlocks = await restoreIndexedDbClean(cachedDbBytes);
+        } catch (e) {
+          alert('IndexedDB restore failed: ' + e);
+          return;
         }
       }
 
-      // 2. Restore IndexedDB
-      if (selectedBackupJson.indexedDB) {
-        for (var dbName in selectedBackupJson.indexedDB) {
-          var stores = selectedBackupJson.indexedDB[dbName];
-          try {
-            var count = await restoreSingleDbSafely(dbName, stores);
-            restoredBlocks += count;
-          } catch (e) {
-            console.warn('Error restoring db ' + dbName, e);
-          }
-        }
-      }
-
-      showToast('Restored ' + restoredPrefs + ' prefs & ' + restoredBlocks + ' database blocks! Launching app…');
+      showToast('✓ Restored ' + restoredPrefs + ' prefs & ' + restoredBlocks + ' database blocks! Launching app…');
       setTimeout(function() {
         window.location.href = '/?cb=' + Date.now();
       }, 1500);
     }
 
-    function restoreSingleDbSafely(dbName, stores) {
-      return new Promise(function(resolve, reject) {
-        // Open to inspect existing stores
-        var req = window.indexedDB.open(dbName);
-        req.onerror = function() { reject(req.error); };
-        req.onsuccess = function() {
-          var db = req.result;
-          var curVersion = db.version || 1;
-          var hasFiles = db.objectStoreNames.contains('files');
-          var hasBlocks = db.objectStoreNames.contains('blocks');
-          db.close();
+    // Helper: Safely restore localStorage with both normal and 'flutter.' prefixed keys
+    function restoreLocalStorageClean(prefsObj) {
+      if (!prefsObj) return 0;
+      var count = 0;
+      for (var key in prefsObj) {
+        var val = prefsObj[key];
+        var valStr = (typeof val === 'object') ? JSON.stringify(val) : String(val);
+        localStorage.setItem(key, valStr);
+        if (!key.startsWith('flutter.')) {
+          localStorage.setItem('flutter.' + key, valStr);
+        } else {
+          localStorage.setItem(key.replace(/^flutter\./, ''), valStr);
+        }
+        count++;
+      }
+      return count;
+    }
 
-          if (!hasFiles || !hasBlocks) {
-            // Must upgrade to create stores
-            var upReq = window.indexedDB.open(dbName, curVersion + 1);
-            upReq.onupgradeneeded = function() {
-              var udb = upReq.result;
-              if (!udb.objectStoreNames.contains('files')) {
-                var f = udb.createObjectStore('files', { autoIncrement: true });
-                try { f.createIndex('fileName', 'name', { unique: true }); } catch (_) {}
-              }
-              if (!udb.objectStoreNames.contains('blocks')) {
-                udb.createObjectStore('blocks');
-              }
+    // Helper: Safely restore IndexedDB at Version 1 with 'files' and 'blocks' stores
+    async function restoreIndexedDbClean(dbBytes) {
+      if (!dbBytes || dbBytes.length === 0) return 0;
+      var dbName = 'libretrac';
+
+      // 1. Check if database already exists at Version 1 with files and blocks
+      var canDirectWrite = await new Promise(function(resolve) {
+        try {
+          var check = window.indexedDB.open(dbName);
+          check.onerror = function() { resolve(false); };
+          check.onsuccess = function() {
+            var db = check.result;
+            var ok = (db.version === 1 && db.objectStoreNames.contains('files') && db.objectStoreNames.contains('blocks'));
+            db.close();
+            resolve(ok);
+          };
+        } catch (_) {
+          resolve(false);
+        }
+      });
+
+      // 2. If shell is missing or broken, recreate cleanly at Version 1
+      if (!canDirectWrite) {
+        await new Promise(function(resolve) {
+          var delReq = window.indexedDB.deleteDatabase(dbName);
+          delReq.onsuccess = delReq.onerror = delReq.onblocked = resolve;
+          setTimeout(resolve, 2000);
+        });
+      }
+
+      // 3. Open Version 1 and populate stores
+      return new Promise(function(resolve, reject) {
+        var openReq = window.indexedDB.open(dbName, 1);
+        openReq.onupgradeneeded = function(e) {
+          var db = openReq.result;
+          if (!db.objectStoreNames.contains('files')) {
+            var filesStore = db.createObjectStore('files', { autoIncrement: true });
+            try {
+              filesStore.createIndex('fileName', 'name', { unique: true });
+            } catch (_) {}
+          }
+          if (!db.objectStoreNames.contains('blocks')) {
+            db.createObjectStore('blocks');
+          }
+        };
+
+        openReq.onerror = function() { reject(openReq.error); };
+
+        openReq.onsuccess = function() {
+          var db = openReq.result;
+          try {
+            if (!db.objectStoreNames.contains('files') || !db.objectStoreNames.contains('blocks')) {
+              db.close();
+              reject(new Error('Object stores files/blocks not found in database shell.'));
+              return;
+            }
+            var tx = db.transaction(['files', 'blocks'], 'readwrite');
+            var filesStore = tx.objectStore('files');
+            var blocksStore = tx.objectStore('blocks');
+
+            // Clear previous entries to prevent duplicate/corrupt offsets
+            filesStore.clear();
+            blocksStore.clear();
+
+            // Drift expects a file entry with name "/database"
+            filesStore.put({ name: '/database', length: dbBytes.length }, 1);
+
+            // Chunk dbBytes into 4096-byte blocks with key [1, offset]
+            var blockSize = 4096;
+            var blockCount = Math.ceil(dbBytes.length / blockSize);
+            for (var i = 0; i < blockCount; i++) {
+              var offset = i * blockSize;
+              var end = Math.min(offset + blockSize, dbBytes.length);
+              var chunk = dbBytes.subarray(offset, end);
+              blocksStore.put(chunk, [1, offset]);
+            }
+
+            tx.oncomplete = function() {
+              db.close();
+              resolve(blockCount);
             };
-            upReq.onerror = function() { reject(upReq.error); };
-            upReq.onsuccess = function() {
-              var udb = upReq.result;
-              writeStoresIndividually(udb, stores).then(resolve).catch(reject);
+            tx.onerror = function(e) {
+              db.close();
+              reject(e);
             };
-          } else {
-            var openReq = window.indexedDB.open(dbName, curVersion);
-            openReq.onerror = function() { reject(openReq.error); };
-            openReq.onsuccess = function() {
-              var udb = openReq.result;
-              writeStoresIndividually(udb, stores).then(resolve).catch(reject);
-            };
+          } catch (txErr) {
+            db.close();
+            reject(txErr);
           }
         };
       });
     }
 
-    function writeStoresIndividually(db, stores) {
-      return new Promise(function(resolve) {
-        var restoredBlockCount = 0;
+    // Repair Database Shell tool
+    async function repairDatabaseShell() {
+      showToast('Repairing database shell…');
+      try {
+        var dbName = 'libretrac';
+        await new Promise(function(resolve) {
+          var delReq = window.indexedDB.deleteDatabase(dbName);
+          delReq.onsuccess = function() { resolve(); };
+          delReq.onerror = function() { resolve(); };
+          delReq.onblocked = function() { resolve(); };
+          setTimeout(resolve, 2000);
+        });
 
-        // 1. Write files if store exists
-        if (stores.files && Array.isArray(stores.files) && db.objectStoreNames.contains('files')) {
-          try {
-            var txF = db.transaction('files', 'readwrite');
-            var fStore = txF.objectStore('files');
-            try { fStore.clear(); } catch (_) {}
-            stores.files.forEach(function(f, idx) {
-              try { fStore.put(f, idx + 1); } catch (_) {}
-            });
-          } catch (e) {
-            console.warn('files write error', e);
-          }
-        }
+        await new Promise(function(resolve, reject) {
+          var openReq = window.indexedDB.open(dbName, 1);
+          openReq.onupgradeneeded = function() {
+            var db = openReq.result;
+            var filesStore = db.createObjectStore('files', { autoIncrement: true });
+            try { filesStore.createIndex('fileName', 'name', { unique: true }); } catch (_) {}
+            db.createObjectStore('blocks');
+          };
+          openReq.onsuccess = function() {
+            openReq.result.close();
+            resolve();
+          };
+          openReq.onerror = function() { reject(openReq.error); };
+        });
 
-        // 2. Write blocks if store exists
-        if (stores.blocks && Array.isArray(stores.blocks) && db.objectStoreNames.contains('blocks')) {
-          try {
-            var txB = db.transaction('blocks', 'readwrite');
-            var bStore = txB.objectStore('blocks');
-            try { bStore.clear(); } catch (_) {}
-            stores.blocks.forEach(function(b, idx) {
-              var key = (b && b.key) ? b.key : [1, idx * 4096];
-              var val = (b && b.value !== undefined) ? b.value : b;
-
-              if (val && typeof val === 'object' && !(val instanceof Uint8Array)) {
-                var keys = Object.keys(val).filter(function(k) { return !isNaN(k); });
-                if (keys.length > 0) {
-                  var arr = new Uint8Array(keys.length);
-                  for (var i = 0; i < keys.length; i++) {
-                    arr[i] = val[i];
-                  }
-                  val = arr;
-                }
-              }
-              try {
-                bStore.put(val, key);
-                restoredBlockCount++;
-              } catch (_) {}
-            });
-
-            txB.oncomplete = function() {
-              db.close();
-              resolve(restoredBlockCount);
-            };
-            txB.onerror = function() {
-              db.close();
-              resolve(restoredBlockCount);
-            };
-            return;
-          } catch (e) {
-            console.warn('blocks write error', e);
-          }
-        }
-
-        db.close();
-        resolve(restoredBlockCount);
-      });
+        showToast('✓ Database engine repaired at Version 1! Ready.');
+      } catch (err) {
+        alert('Repair error: ' + err);
+      }
     }
 
     function downloadAssembledDb() {
@@ -639,6 +827,7 @@
       showToast('Downloaded libretrac_recovered.db (' + (cachedDbBytes.length / 1024).toFixed(1) + ' KB)');
     }
 
+    // Scan Storage (non-destructive)
     async function scanStorage() {
       var prefsCount = 0;
       for (var i = 0; i < localStorage.length; i++) {
@@ -659,9 +848,6 @@
         var dbs = [];
         if (window.indexedDB && window.indexedDB.databases) {
           dbs = await window.indexedDB.databases();
-        }
-        if (!dbs || dbs.length === 0) {
-          dbs = [{ name: 'libretrac' }];
         }
 
         for (var j = 0; j < dbs.length; j++) {
@@ -690,7 +876,7 @@
       if (dbsFound.length > 0) {
         dbBadge.textContent = dbsFound.join(', ') + ' (' + totalDbRecords + ' items)';
       } else {
-        dbBadge.textContent = 'Active (ready)';
+        dbBadge.textContent = 'None detected (ready for restore)';
       }
 
       var preview = document.getElementById('data-preview');
