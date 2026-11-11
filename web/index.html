@@ -112,6 +112,108 @@
       window.location.reload(true);
     };
 
+    // LibreTrac Native Web File Download & Share Service
+    // 1. Check if Web Share API supports file sharing
+    window.canShareFiles = globalThis.canShareFiles = function() {
+      try {
+        if (!navigator.canShare) return false;
+        var testFile = new File(['ping'], 'test.zip', {type: 'application/zip'});
+        return navigator.canShare({ files: [testFile] });
+      } catch (e) {
+        return false;
+      }
+    };
+
+    // 2. Shares file directly using Web Share API (Primary for Android & iOS)
+    window.shareBlobFile = globalThis.shareBlobFile = async function(fileName, base64Data, mimeType, title) {
+      try {
+        var byteCharacters = atob(base64Data);
+        var byteNumbers = new Array(byteCharacters.length);
+        for (var i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        var byteArray = new Uint8Array(byteNumbers);
+        var blob = new Blob([byteArray], {type: mimeType || 'application/zip'});
+        var file = new File([blob], fileName, {type: mimeType || 'application/zip'});
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: title || 'LibreTrac Backup',
+            text: 'LibreTrac backup: ' + fileName,
+          });
+          return true;
+        }
+        return false;
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          // User closed share dialog without picking an app - not an error
+          return true;
+        }
+        console.warn('Web Share failed, fallback to download:', e);
+        return false;
+      }
+    };
+
+    // 3. Triggers direct browser download via object URL / <a> click
+    window.downloadBlobFile = globalThis.downloadBlobFile = function(fileName, base64Data, mimeType) {
+      try {
+        var byteCharacters = atob(base64Data);
+        var byteNumbers = new Array(byteCharacters.length);
+        for (var i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        var byteArray = new Uint8Array(byteNumbers);
+        var blob = new Blob([byteArray], {type: mimeType || 'application/zip'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+
+        // Keep anchor attached briefly so mobile browsers can process the navigation
+        setTimeout(function() {
+          if (a.parentNode) {
+            a.parentNode.removeChild(a);
+          }
+        }, 10000);
+
+        // Keep object URL alive for 60 seconds
+        setTimeout(function() {
+          URL.revokeObjectURL(url);
+        }, 60000);
+
+        return true;
+      } catch (e) {
+        console.error('Download error:', e);
+        return false;
+      }
+    };
+
+    // 4. Opens blob in new tab/window as a fallback for mobile browsers
+    window.openBlobFile = globalThis.openBlobFile = function(fileName, base64Data, mimeType) {
+      try {
+        var byteCharacters = atob(base64Data);
+        var byteNumbers = new Array(byteCharacters.length);
+        for (var i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        var byteArray = new Uint8Array(byteNumbers);
+        var blob = new Blob([byteArray], {type: 'application/octet-stream'});
+        var url = URL.createObjectURL(blob);
+        var win = window.open(url, '_blank');
+        setTimeout(function() {
+          URL.revokeObjectURL(url);
+        }, 60000);
+        return !!win;
+      } catch (e) {
+        console.error('Open blob error:', e);
+        return false;
+      }
+    };
+
     // Auto-unregister legacy service worker if present so existing users automatically
     // receive the updated app version without being trapped in stale ServiceWorker cache.
     if ('serviceWorker' in navigator) {

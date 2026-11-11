@@ -138,13 +138,32 @@ extension BackupOps on AppDatabase {
   Future<Map<String, dynamic>> exportData() async {
     final prefs = await SharedPreferences.getInstance();
     final rawMetrics = prefs.getString('custom_metrics');
-    final customMetrics =
-        rawMetrics != null ? jsonDecode(rawMetrics) as List : [];
+    List customMetrics = [];
+    if (rawMetrics != null) {
+      try {
+        final decoded = jsonDecode(rawMetrics);
+        if (decoded is List) customMetrics = decoded;
+      } catch (_) {}
+    }
 
     final rawLogs = prefs.getStringList('medication_dose_logs') ?? [];
-    final doseLogs = rawLogs.map((s) => jsonDecode(s)).toList();
+    final doseLogs = <dynamic>[];
+    for (final s in rawLogs) {
+      try {
+        doseLogs.add(jsonDecode(s));
+      } catch (_) {
+        doseLogs.add(s);
+      }
+    }
+
     final rawDosesPerDay = prefs.getString('medication_doses_per_day');
-    final dosesPerDay = rawDosesPerDay != null ? jsonDecode(rawDosesPerDay) : null;
+    dynamic dosesPerDay;
+    if (rawDosesPerDay != null) {
+      try {
+        dosesPerDay = jsonDecode(rawDosesPerDay);
+      } catch (_) {}
+    }
+
     final substanceOrder = prefs.getStringList('substanceOrder') ?? [];
     final dreamLensPreset = prefs.getString('dream_lens_preset');
     final dreamCustomInstructions = prefs.getString('dream_custom_instructions');
