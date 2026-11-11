@@ -763,7 +763,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _importEverything(BuildContext ctx, WidgetRef ref) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['zip'],
+      allowedExtensions: ['zip', 'json'],
       withData: kIsWeb,
     );
     if (result == null) return;
@@ -774,7 +774,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           (ctx) => AlertDialog(
             title: const Text('Confirm Import'),
             content: const Text(
-              'This will overwrite all data and preferences. Continue?',
+              'This will overwrite all data and preferences with the selected backup file. Continue?',
             ),
             actions: [
               TextButton(
@@ -792,61 +792,109 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (ok != true) return;
 
     try {
-      final Uint8List zipBytes;
+      final Uint8List fileBytes;
+      final String fileName = result.files.single.name;
       if (kIsWeb) {
-        zipBytes = result.files.single.bytes!;
+        fileBytes = result.files.single.bytes!;
       } else {
         final zipFile = File(result.files.single.path!);
-        zipBytes = zipFile.readAsBytesSync();
+        fileBytes = zipFile.readAsBytesSync();
       }
 
-      final archive = ZipDecoder().decodeBytes(zipBytes);
+      Map<String, dynamic>? dataJson;
+      Map<String, dynamic>? prefsJson;
 
-      final dataFile = archive.files.firstWhere((f) => f.name == 'data.json');
-      final prefsFile = archive.files.firstWhere((f) => f.name == 'prefs.json');
+      final isZip =
+          fileBytes.length >= 4 &&
+          fileBytes[0] == 0x50 &&
+          fileBytes[1] == 0x4B &&
+          fileBytes[2] == 0x03 &&
+          fileBytes[3] == 0x04;
 
-      final dataJson =
-          jsonDecode(utf8.decode(dataFile.content as List<int>))
-              as Map<String, dynamic>;
-      final prefsJson =
-          jsonDecode(utf8.decode(prefsFile.content as List<int>))
-              as Map<String, dynamic>;
+      if (isZip || fileName.toLowerCase().endsWith('.zip')) {
+        final archive = ZipDecoder().decodeBytes(fileBytes);
 
-      // Import SharedPreferences
-      final prefs = await SharedPreferences.getInstance();
-      for (final entry in prefsJson.entries) {
-        final key = entry.key;
-        final value = entry.value;
+        final dataFile = archive.files.firstWhereOrNull((f) => f.name == 'data.json');
+        final prefsFile = archive.files.firstWhereOrNull((f) => f.name == 'prefs.json');
 
-        if (value is bool) {
-          await prefs.setBool(key, value);
-        } else if (value is int) {
-          await prefs.setInt(key, value);
-        } else if (value is double) {
-          await prefs.setDouble(key, value);
-        } else if (value is String) {
-          await prefs.setString(key, value);
-        } else if (value is List && value.every((e) => e is String)) {
-          await prefs.setStringList(key, List<String>.from(value));
+        if (dataFile != null) {
+          dataJson =
+              jsonDecode(utf8.decode(dataFile.content as List<int>))
+                  as Map<String, dynamic>;
+        }
+        if (prefsFile != null) {
+          prefsJson =
+              jsonDecode(utf8.decode(prefsFile.content as List<int>))
+                  as Map<String, dynamic>;
+        }
+
+        final profileFile = archive.files.firstWhereOrNull(
+          (f) => f.name.startsWith('profile.'),
+        );
+
+        if (profileFile != null && !kIsWeb) {
+          final tmpDir = await getTemporaryDirectory();
+          final ext = profileFile.name.split('.').last;
+          final newPath = '${tmpDir.path}/restored_profile.$ext';
+          File(newPath).writeAsBytesSync(profileFile.content as List<int>);
+
+          // Actually update SharedPreferences
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('user_profile_picture', newPath);
+        }
+      } else {
+        // Handle .json backup file
+        final rawText = utf8.decode(fileBytes);
+        final decoded = jsonDecode(rawText);
+        if (decoded is Map<String, dynamic>) {
+          if (decoded.containsKey('localStorage') &&
+              decoded['localStorage'] is Map) {
+            prefsJson = Map<String, dynamic>.from(
+              decoded['localStorage'] as Map,
+            );
+          }
+          if (decoded.containsKey('prefs') && decoded['prefs'] is Map) {
+            prefsJson = Map<String, dynamic>.from(decoded['prefs'] as Map);
+          }
+          if (decoded.containsKey('data') && decoded['data'] is Map) {
+            dataJson = Map<String, dynamic>.from(decoded['data'] as Map);
+          } else if (decoded.containsKey('moodEntries') ||
+              decoded.containsKey('substances')) {
+            dataJson = decoded;
+          }
+          if (dataJson == null && prefsJson == null) {
+            prefsJson = decoded;
+          }
         }
       }
 
-      final profileFile = archive.files.firstWhereOrNull(
-        (f) => f.name.startsWith('profile.'),
-      );
+      // Import SharedPreferences if present
+      if (prefsJson != null) {
+        final prefs = await SharedPreferences.getInstance();
+        for (final entry in prefsJson.entries) {
+          final key = entry.key;
+          final value = entry.value;
 
-      if (profileFile != null && !kIsWeb) {
-        final tmpDir = await getTemporaryDirectory();
-        final ext = profileFile.name.split('.').last;
-        final newPath = '${tmpDir.path}/restored_profile.$ext';
-        File(newPath).writeAsBytesSync(profileFile.content as List<int>);
-
-        // Actually update SharedPreferences
-        await prefs.setString('user_profile_picture', newPath);
+          if (value is bool) {
+            await prefs.setBool(key, value);
+          } else if (value is int) {
+            await prefs.setInt(key, value);
+          } else if (value is double) {
+            await prefs.setDouble(key, value);
+          } else if (value is String) {
+            await prefs.setString(key, value);
+          } else if (value is List && value.every((e) => e is String)) {
+            await prefs.setStringList(key, List<String>.from(value));
+          } else if (value is Map || value is List) {
+            await prefs.setString(key, jsonEncode(value));
+          }
+        }
       }
 
-      // Import DB
-      await ref.read(dbProvider).importData(dataJson);
+      // Import DB if present
+      if (dataJson != null) {
+        await ref.read(dbProvider).importData(dataJson);
+      }
 
       // Reload providers AFTER data is in place
       await ref.read(customMetricsProvider.notifier).reload();
