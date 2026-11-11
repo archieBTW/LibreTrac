@@ -186,6 +186,19 @@
       <p class="subtitle">Safely restore and convert your backup file</p>
     </div>
 
+    <!-- Official In-App Tool Card -->
+    <div class="card" style="border: 1px solid #a855f7; background: rgba(168, 85, 247, 0.12); text-align: center; padding: 20px;">
+      <div style="font-size: 16px; font-weight: 700; color: #f4f4f6; margin-bottom: 6px;">
+        ⚡ Official In-App Backup & Recovery
+      </div>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+        Use the native Flutter app engine to export or import your complete data with full provider verification.
+      </p>
+      <a href="/#/backup" class="btn btn-primary" style="margin-bottom: 0; text-decoration: none;">
+        🚀 Open In-App Backup & Recovery Center
+      </a>
+    </div>
+
     <!-- 1. Restore & Convert Card -->
     <div class="card" style="border: 1px solid rgba(168, 85, 247, 0.5); background: rgba(168, 85, 247, 0.06);">
       <div class="card-title" style="color: #c084fc; font-size: 16px;">
@@ -240,15 +253,29 @@
     <!-- 3. Fresh Export Options -->
     <div class="card">
       <div class="card-title">💾 Fresh Backup from Current Storage</div>
-      <button id="btn-share" class="btn btn-primary" onclick="shareBackup()">
-        📱 Save Current Storage to Device / Share
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+        Directly exports your current database and preferences into the official LibreTrac <code>.zip</code> archive (identical to the in-app export).
+      </p>
+      <button id="btn-export-current-zip" class="btn btn-primary" onclick="exportCurrentStorageAsZip(true)">
+        📱 Save / Share Official Backup (.zip)
       </button>
-      <button id="btn-download" class="btn btn-outline" onclick="downloadBackup()">
-        ⬇️ Direct Download Current Backup (.json)
+      <button id="btn-download-current-zip" class="btn btn-outline" style="border-color: #a855f7; color: #e9d5ff;" onclick="exportCurrentStorageAsZip(false)">
+        📦 Direct Download Official Backup (.zip)
       </button>
-      <button id="btn-copy" class="btn btn-outline" onclick="copyBackup()">
-        📋 Copy Current Backup to Clipboard
-      </button>
+
+      <details style="margin-top: 10px;">
+        <summary style="font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 6px 0;">
+          ⚙️ Advanced / Raw Storage JSON Options
+        </summary>
+        <div style="margin-top: 10px;">
+          <button id="btn-download-raw-json" class="btn btn-outline" style="font-size: 13px; padding: 10px;" onclick="downloadBackup()">
+            ⬇️ Download Raw Storage (.json)
+          </button>
+          <button id="btn-copy-raw-json" class="btn btn-outline" style="font-size: 13px; padding: 10px;" onclick="copyBackup()">
+            📋 Copy Raw Storage to Clipboard
+          </button>
+        </div>
+      </details>
     </div>
 
     <!-- 4. Engine Repair & Launch Card -->
@@ -1044,6 +1071,302 @@
       } catch (e) {
         showToast('Clipboard write failed: ' + e);
       }
+    }
+
+    // Helper: Read live IndexedDB blocks store into a single Uint8Array
+    function readLiveIndexedDbBytes(dbName) {
+      return new Promise(function(resolve) {
+        try {
+          var req = window.indexedDB.open(dbName || 'libretrac');
+          req.onerror = function() { resolve(null); };
+          req.onsuccess = function() {
+            var db = req.result;
+            if (!db.objectStoreNames.contains('blocks')) {
+              db.close();
+              return resolve(null);
+            }
+            try {
+              var tx = db.transaction('blocks', 'readonly');
+              var store = tx.objectStore('blocks');
+              var getAllReq = store.getAll();
+              getAllReq.onsuccess = function() {
+                var blocks = getAllReq.result || [];
+                db.close();
+                if (blocks.length === 0) return resolve(null);
+
+                var chunks = [];
+                var totalLen = 0;
+                for (var i = 0; i < blocks.length; i++) {
+                  var b = blocks[i];
+                  var val = (b && b.value !== undefined) ? b.value : b;
+                  if (val && typeof val === 'object' && !(val instanceof Uint8Array)) {
+                    var keys = Object.keys(val).filter(function(k) { return !isNaN(k); });
+                    if (keys.length > 0) {
+                      keys.sort(function(a, b) { return Number(a) - Number(b); });
+                      var arr = new Uint8Array(keys.length);
+                      for (var k = 0; k < keys.length; k++) arr[k] = val[keys[k]];
+                      val = arr;
+                    }
+                  }
+                  if (val instanceof Uint8Array) {
+                    chunks.push(val);
+                    totalLen += val.length;
+                  }
+                }
+                if (totalLen === 0) return resolve(null);
+
+                var out = new Uint8Array(totalLen);
+                var offset = 0;
+                for (var c = 0; c < chunks.length; c++) {
+                  out.set(chunks[c], offset);
+                  offset += chunks[c].length;
+                }
+                resolve(out);
+              };
+              getAllReq.onerror = function() { db.close(); resolve(null); };
+            } catch (_) {
+              db.close();
+              resolve(null);
+            }
+          };
+        } catch (_) {
+          resolve(null);
+        }
+      });
+    }
+
+    // Export Current Browser Storage directly into official LibreTrac .zip archive
+    async function exportCurrentStorageAsZip(shouldShare) {
+      showToast('Extracting live database & preferences…');
+
+      // 1. Gather clean prefs from localStorage
+      var cleanPrefs = {};
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        var val = localStorage.getItem(key);
+        var cleanKey = key.replace(/^flutter\./, '');
+        try {
+          cleanPrefs[cleanKey] = JSON.parse(val);
+        } catch (_) {
+          cleanPrefs[cleanKey] = val;
+        }
+      }
+
+      // 2. Extract SQLite database bytes from live IndexedDB
+      var currentDbBytes = null;
+      try {
+        currentDbBytes = await readLiveIndexedDbBytes('libretrac');
+      } catch (err) {
+        console.warn('Live IndexedDB read failed, fallback to scanned dump:', err);
+      }
+
+      if (!currentDbBytes && backupData && backupData.indexedDB) {
+        currentDbBytes = extractDbBytesFromBackup(backupData);
+      }
+
+      var dataJson = {};
+
+      if (currentDbBytes) {
+        try {
+          var SQL = await getSqlJsInstance();
+          if (SQL) {
+            var db = new SQL.Database(currentDbBytes);
+
+            function queryTable(tblName) {
+              try {
+                var res = db.exec('SELECT * FROM ' + tblName);
+                if (!res || res.length === 0) return [];
+                var cols = res[0].columns;
+                var vals = res[0].values;
+                return vals.map(function(row) {
+                  var obj = {};
+                  cols.forEach(function(c, idx) {
+                    var v = row[idx];
+                    if (typeof v === 'number' && (c.includes('time') || c.includes('date') || c.includes('at')) && v > 0 && v < 10000000000) {
+                      v = v * 1000;
+                    }
+                    var camel = c.replace(/_([a-z])/g, function(g) { return g[1].toUpperCase(); });
+                    obj[camel] = v;
+                    obj[c] = v;
+                  });
+                  return obj;
+                });
+              } catch (_) {
+                return [];
+              }
+            }
+
+            dataJson['substances'] = queryTable('substances');
+            dataJson['moodEntries'] = queryTable('mood_entries').map(function(m) {
+              var metrics = m.customMetrics || m.custom_metrics;
+              if (typeof metrics === 'string') {
+                try { metrics = JSON.parse(metrics); } catch(_) {}
+              }
+              if (!metrics || typeof metrics !== 'object') {
+                metrics = {};
+              }
+              var legacy = ['energy', 'happiness', 'creativity', 'focus', 'irritability', 'anxiety'];
+              legacy.forEach(function(leg) {
+                if (m[leg] !== undefined && m[leg] !== null) {
+                  var title = leg.charAt(0).toUpperCase() + leg.slice(1);
+                  metrics[title] = Number(m[leg]) || 0;
+                }
+              });
+              if (Object.keys(metrics).length > 0) {
+                m.customMetrics = metrics;
+              }
+              return m;
+            });
+            dataJson['sleepEntries'] = queryTable('sleep_entries');
+            dataJson['reactionResults'] = queryTable('reaction_results');
+            dataJson['stroopResults'] = queryTable('stroop_results');
+            dataJson['goNoGoResults'] = queryTable('go_no_go_results');
+            dataJson['digitSpanResults'] = queryTable('digit_span_results');
+            dataJson['symbolSearchResults'] = queryTable('symbol_search_results');
+          }
+        } catch (sqlErr) {
+          console.warn('SQL.js table query error on live storage:', sqlErr);
+        }
+      }
+
+      // 3. Extract custom metrics and dose logs
+      var customMetricsRaw = cleanPrefs.custom_metrics;
+      if (customMetricsRaw) {
+        try {
+          dataJson['customMetrics'] = (typeof customMetricsRaw === 'string') ? JSON.parse(customMetricsRaw) : customMetricsRaw;
+        } catch (_) {
+          dataJson['customMetrics'] = customMetricsRaw;
+        }
+      }
+
+      // If customMetrics missing or empty, synthesize from moodEntries
+      if (!dataJson['customMetrics'] || (Array.isArray(dataJson['customMetrics']) && dataJson['customMetrics'].length === 0)) {
+        var defaultColors = {
+          'Energy': 0xFF009688,
+          'Happiness': 0xFFFF9800,
+          'Creativity': 0xFF9C27B0,
+          'Focus': 0xFF2196F3,
+          'Irritability': 0xFFF44336,
+          'Anxiety': 0xFFFFC107
+        };
+        var synthesized = [];
+        var seenNames = {};
+        if (Array.isArray(dataJson['moodEntries'])) {
+          dataJson['moodEntries'].forEach(function(entry) {
+            if (entry.customMetrics && typeof entry.customMetrics === 'object') {
+              Object.keys(entry.customMetrics).forEach(function(k) {
+                if (!seenNames[k]) {
+                  seenNames[k] = true;
+                  synthesized.push({
+                    name: k,
+                    color: defaultColors[k] || 0xFF2196F3
+                  });
+                }
+              });
+            }
+          });
+        }
+        if (synthesized.length > 0) {
+          dataJson['customMetrics'] = synthesized;
+        }
+      }
+
+      var rawLogs = cleanPrefs.medication_dose_logs;
+      if (rawLogs) {
+        if (typeof rawLogs === 'string') {
+          try { rawLogs = JSON.parse(rawLogs); } catch(_) {}
+        }
+        if (Array.isArray(rawLogs)) {
+          dataJson['medicationDoseLogs'] = rawLogs.map(function(s) {
+            if (typeof s === 'string') {
+              try { return JSON.parse(s); } catch(_) { return s; }
+            }
+            return s;
+          });
+        }
+      }
+
+      var rawDosesPerDay = cleanPrefs.medication_doses_per_day;
+      if (rawDosesPerDay) {
+        try { dataJson['medicationDosesPerDay'] = (typeof rawDosesPerDay === 'string') ? JSON.parse(rawDosesPerDay) : rawDosesPerDay; } catch(_) { dataJson['medicationDosesPerDay'] = rawDosesPerDay; }
+      }
+
+      var substanceOrderRaw = cleanPrefs.substanceOrder;
+      if (substanceOrderRaw) dataJson['substanceOrder'] = substanceOrderRaw;
+
+      var dreamPreset = cleanPrefs.dream_lens_preset;
+      if (dreamPreset) dataJson['dreamLensPreset'] = dreamPreset;
+
+      var dreamInstr = cleanPrefs.dream_custom_instructions;
+      if (dreamInstr) dataJson['dreamCustomInstructions'] = dreamInstr;
+
+      dataJson['userProfile'] = {
+        username: cleanPrefs['user_profile_username'] || 'LibreUser',
+        picture: cleanPrefs['user_profile_picture'],
+        bloodType: cleanPrefs['user_profile_blood_type'],
+        birthday: cleanPrefs['user_profile_birthday'],
+        height: cleanPrefs['user_profile_height'],
+        weight: cleanPrefs['user_profile_weight']
+      };
+
+      dataJson['settings'] = {
+        themeMode: cleanPrefs['theme_mode'],
+        accentColor: cleanPrefs['accent_color'],
+        geminiApiKey: cleanPrefs['gemini_api_key'],
+        geminiModel: cleanPrefs['gemini_model'],
+        dreamLensPreset: dreamPreset,
+        dreamCustomInstructions: dreamInstr,
+        streakCount: cleanPrefs['streak_count'],
+        lastCheckInDate: cleanPrefs['last_check_in_date'],
+        dailyReminders: cleanPrefs['daily_reminders']
+      };
+
+      dataJson['prefs'] = cleanPrefs;
+
+      // 4. Create ZIP using JSZip
+      if (typeof JSZip !== 'function') {
+        alert('JSZip library not loaded. Please verify internet connection.');
+        return;
+      }
+
+      var zip = new JSZip();
+      zip.file('data.json', JSON.stringify(dataJson, null, 2));
+      zip.file('prefs.json', JSON.stringify(cleanPrefs, null, 2));
+
+      var zipContent = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
+      var d = new Date();
+      var dateStr = d.getFullYear() +
+        ('0' + (d.getMonth() + 1)).slice(-2) +
+        ('0' + d.getDate()).slice(-2) + '_' +
+        ('0' + d.getHours()).slice(-2) +
+        ('0' + d.getMinutes()).slice(-2);
+      var zipFileName = 'libretrac_backup_' + dateStr + '.zip';
+
+      if (shouldShare && navigator.canShare && navigator.canShare({ files: [new File([zipContent], zipFileName, { type: 'application/zip' })] })) {
+        try {
+          await navigator.share({
+            files: [new File([zipContent], zipFileName, { type: 'application/zip' })],
+            title: 'LibreTrac Backup',
+            text: zipFileName
+          });
+          showToast('Backup ZIP shared successfully!');
+          return;
+        } catch (e) {
+          if (e.name === 'AbortError') return;
+        }
+      }
+
+      var url = URL.createObjectURL(zipContent);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = zipFileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 5000);
+      showToast('Downloaded ' + zipFileName + '!');
     }
 
     async function forceAppRefresh() {

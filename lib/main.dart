@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:libretrac/features/home/view/home_screen.dart';
+import 'package:libretrac/features/settings/view/standalone_backup_screen.dart';
 import 'package:libretrac/providers/theme_provider.dart';
 import 'package:libretrac/services/mood_widget_service.dart';
 
@@ -215,6 +216,11 @@ class LibreTracApp extends ConsumerWidget {
     //   ),
     // );
 
+    final uri = Uri.base;
+    final isBackupRoute = uri.queryParameters.containsKey('backup') ||
+        uri.fragment.contains('backup') ||
+        uri.path.contains('backup');
+
     return ShowCaseWidget(
       builder: (context) {
         return MaterialApp(
@@ -222,9 +228,25 @@ class LibreTracApp extends ConsumerWidget {
           themeMode: mode,
           theme: lightTheme,
           darkTheme: darkTheme,
-          home: const HomeScreen(),
+          routes: {
+            '/': (context) => const HomeScreen(),
+            '/backup': (context) => const StandaloneBackupScreen(),
+          },
+          onGenerateRoute: (settings) {
+            if (settings.name == '/backup') {
+              return MaterialPageRoute(
+                builder: (context) => const StandaloneBackupScreen(),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (context) => const HomeScreen(),
+            );
+          },
+          home: isBackupRoute
+              ? const StandaloneBackupScreen()
+              : const HomeScreen(),
         );
-      }
+      },
     );
   }
 }
