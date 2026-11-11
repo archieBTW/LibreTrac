@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>LibreTrac Direct Backup & Recovery</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <style>
+    :root {
+      --bg: #121214;
+      --card-bg: #1c1c1f;
+      --card-border: #2e2e34;
+      --text: #f4f4f6;
+      --text-muted: #a1a1aa;
+      --primary: #a855f7;
+      --primary-hover: #9333ea;
+      --accent-green: #22c55e;
+      --accent-blue: #3b82f6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 24px 16px;
+      line-height: 1.5;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      max-width: 540px;
+      width: 100%;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 4px 20px rgba(168, 85, 247, 0.25);
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 14px;
+    }
+    .status-item:last-child { border-bottom: none; }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-success {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 13px 18px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+      margin-bottom: 10px;
+      text-decoration: none;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+    .btn-outline:hover { background: rgba(255, 255, 255, 0.05); }
+    .btn-green {
+      background: rgba(34, 197, 94, 0.18);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.35);
+    }
+    .btn-green:hover { background: rgba(34, 197, 94, 0.28); }
+    .notice {
+      background: rgba(168, 85, 247, 0.08);
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #e9d5ff;
+      margin-bottom: 18px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #27272a;
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      border: 1px solid #3f3f46;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 9999;
+    }
+    .toast.show { opacity: 1; }
+    pre {
+      background: #09090b;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      overflow-x: auto;
+      max-height: 180px;
+      color: #d4d4d8;
+      border: 1px solid #27272a;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="favicon.png" alt="LibreTrac" class="logo" />
+      <h1>Direct Backup & Recovery</h1>
+      <p class="subtitle">Safely export your data without clearing storage</p>
+    </div>
+
+    <div class="notice">
+      🔒 <strong>Your data is 100% safe:</strong> Opening this page runs on the same origin (<code>libretrac.site</code>) and reads your existing storage directly. Nothing is deleted or modified.
+    </div>
+
+    <div class="card">
+      <div class="card-title">📦 Detected Local Data</div>
+      <div class="status-item">
+        <span>Preferences & Dose Logs (localStorage)</span>
+        <span id="prefs-count" class="status-badge badge-success">Scanning…</span>
+      </div>
+      <div class="status-item">
+        <span>SQLite Database (IndexedDB)</span>
+        <span id="db-count" class="status-badge badge-success">Scanning…</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">💾 Backup Options</div>
+      <button id="btn-share" class="btn btn-primary" onclick="shareBackup()">
+        📱 Save to Device / Share (Android)
+      </button>
+      <button id="btn-download" class="btn btn-outline" onclick="downloadBackup()">
+        ⬇️ Direct Download Backup (.json)
+      </button>
+      <button id="btn-copy" class="btn btn-outline" onclick="copyBackup()">
+        📋 Copy Backup JSON to Clipboard
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🚀 Launch Latest App</div>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+        Forces your browser to bypass cached scripts while keeping your IndexedDB database and local storage 100% intact.
+      </p>
+      <button class="btn btn-green" onclick="forceAppRefresh()">
+        🔄 Clear Script Cache & Open LibreTrac
+      </button>
+    </div>
+
+    <div class="card" id="preview-card" style="display: none;">
+      <div class="card-title">🔍 Data Preview</div>
+      <pre id="data-preview"></pre>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Action completed</div>
+
+  <script>
+    var backupData = {
+      app: 'LibreTrac',
+      exportedAt: new Date().toISOString(),
+      localStorage: {},
+      indexedDB: {}
+    };
+
+    function showToast(msg) {
+      var t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(function() { t.classList.remove('show'); }, 3000);
+    }
+
+    async function scanStorage() {
+      // 1. Scan LocalStorage
+      var prefsCount = 0;
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        var val = localStorage.getItem(key);
+        try {
+          backupData.localStorage[key] = JSON.parse(val);
+        } catch (_) {
+          backupData.localStorage[key] = val;
+        }
+        prefsCount++;
+      }
+      document.getElementById('prefs-count').textContent = prefsCount + ' keys found';
+
+      // 2. Scan IndexedDB
+      var totalDbRecords = 0;
+      var dbsFound = [];
+      try {
+        var dbs = [];
+        if (window.indexedDB && window.indexedDB.databases) {
+          dbs = await window.indexedDB.databases();
+        }
+        if (!dbs || dbs.length === 0) {
+          dbs = [{ name: 'libretrac' }, { name: '/drift/libretrac' }];
+        }
+
+        for (var j = 0; j < dbs.length; j++) {
+          var dbName = dbs[j].name;
+          if (!dbName) continue;
+          try {
+            var dumped = await dumpIndexedDb(dbName);
+            if (dumped && Object.keys(dumped).length > 0) {
+              backupData.indexedDB[dbName] = dumped;
+              dbsFound.push(dbName);
+              for (var s in dumped) {
+                if (Array.isArray(dumped[s])) {
+                  totalDbRecords += dumped[s].length;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('DB dump error for ' + dbName, e);
+          }
+        }
+      } catch (err) {
+        console.warn('Error querying IndexedDB databases:', err);
+      }
+
+      var dbBadge = document.getElementById('db-count');
+      if (dbsFound.length > 0) {
+        dbBadge.textContent = dbsFound.join(', ') + ' (' + totalDbRecords + ' items)';
+      } else {
+        dbBadge.textContent = 'Active (ready)';
+      }
+
+      // Show preview
+      var preview = document.getElementById('data-preview');
+      preview.textContent = JSON.stringify({
+        exportedAt: backupData.exportedAt,
+        localStorageKeys: Object.keys(backupData.localStorage),
+        indexedDBs: Object.keys(backupData.indexedDB)
+      }, null, 2);
+      document.getElementById('preview-card').style.display = 'block';
+    }
+
+    function dumpIndexedDb(name) {
+      return new Promise(function(resolve) {
+        var req = window.indexedDB.open(name);
+        req.onerror = function() { resolve(null); };
+        req.onsuccess = function() {
+          var db = req.result;
+          var storeNames = Array.from(db.objectStoreNames);
+          if (storeNames.length === 0) {
+            db.close();
+            return resolve({});
+          }
+          var out = {};
+          var remaining = storeNames.length;
+          var tx = db.transaction(storeNames, 'readonly');
+          storeNames.forEach(function(storeName) {
+            try {
+              var store = tx.objectStore(storeName);
+              var getAll = store.getAll();
+              getAll.onsuccess = function() {
+                out[storeName] = getAll.result;
+                remaining--;
+                if (remaining === 0) {
+                  db.close();
+                  resolve(out);
+                }
+              };
+              getAll.onerror = function() {
+                remaining--;
+                if (remaining === 0) {
+                  db.close();
+                  resolve(out);
+                }
+              };
+            } catch (_) {
+              remaining--;
+              if (remaining === 0) {
+                db.close();
+                resolve(out);
+              }
+            }
+          });
+        };
+      });
+    }
+
+    function getBackupBlob() {
+      var jsonStr = JSON.stringify(backupData, null, 2);
+      return new Blob([jsonStr], { type: 'application/json' });
+    }
+
+    function getFileName() {
+      var d = new Date();
+      var dateStr = d.getFullYear() +
+        ('0' + (d.getMonth() + 1)).slice(-2) +
+        ('0' + d.getDate()).slice(-2) + '_' +
+        ('0' + d.getHours()).slice(-2) +
+        ('0' + d.getMinutes()).slice(-2);
+      return 'libretrac_storage_backup_' + dateStr + '.json';
+    }
+
+    async function shareBackup() {
+      var blob = getBackupBlob();
+      var fileName = getFileName();
+      var file = new File([blob], fileName, { type: 'application/json' });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'LibreTrac Backup',
+            text: 'LibreTrac complete storage backup (' + fileName + ')'
+          });
+          showToast('Backup shared successfully!');
+          return;
+        } catch (e) {
+          if (e.name === 'AbortError') return;
+          console.warn('Share error, falling back to download:', e);
+        }
+      }
+      downloadBackup();
+    }
+
+    function downloadBackup() {
+      var blob = getBackupBlob();
+      var fileName = getFileName();
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 5000);
+      showToast('Downloading ' + fileName);
+    }
+
+    async function copyBackup() {
+      var jsonStr = JSON.stringify(backupData, null, 2);
+      try {
+        await navigator.clipboard.writeText(jsonStr);
+        showToast('Complete backup JSON copied to clipboard!');
+      } catch (e) {
+        showToast('Clipboard write failed: ' + e);
+      }
+    }
+
+    async function forceAppRefresh() {
+      showToast('Purging stale script cache…');
+      try {
+        if ('serviceWorker' in navigator) {
+          var regs = await navigator.serviceWorker.getRegistrations();
+          for (var i = 0; i < regs.length; i++) {
+            await regs[i].unregister();
+          }
+        }
+        if ('caches' in window) {
+          var keys = await caches.keys();
+          for (var j = 0; j < keys.length; j++) {
+            await caches.delete(keys[j]);
+          }
+        }
+      } catch (e) {
+        console.warn('Cache purge error:', e);
+      }
+      // Redirect to main app with cache-busting timestamp
+      window.location.href = '/?cb=' + Date.now();
+    }
+
+    window.addEventListener('DOMContentLoaded', scanStorage);
+  </script>
+</body>
+</html>
+
